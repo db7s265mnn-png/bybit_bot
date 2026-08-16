@@ -30,6 +30,7 @@ from trading_bot.market.csv_io import candles_from_csv
 from trading_bot.market.market_data import MarketDataService
 from trading_bot.market.store import CandleStore
 from trading_bot.monitoring.logger import configure_logging, get_logger
+from trading_bot.execution.order_state import parse_exchange_order
 from trading_bot.paper.engine import PAPER_DISCLAIMER, PaperEngine
 from trading_bot.paper.runner import run_live, run_replay
 from trading_bot.risk.risk_manager import RiskManager
@@ -107,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     paper.add_argument("--from-db", action="store_true", help="Replay stored SQLite candles through the paper engine")
     paper.add_argument("--session", default="paper", help="Paper session id for SQLite restore")
     paper.add_argument("--warmup", type=int, default=200, help="Confirmed candles to seed EMA before live paper")
+    order_status = sub.add_parser(
+        "order-status",
+        help="Look up an order by orderLinkId (does not place or cancel orders)",
+    )
+    order_status.add_argument("--link-id", required=True, help="Bybit orderLinkId")
+    order_status.add_argument("--symbol", default=None)
     return parser
 
 
@@ -502,6 +509,32 @@ def cmd_paper(
         db.close()
 
 
+def cmd_order_status(client: BybitRESTClient, symbol: str, link_id: str) -> int:
+    row = client.get_order(symbol=symbol, order_link_id=link_id)
+    if row is None:
+        _print({"order_link_id": link_id, "found": False, "note": "not in open orders or history"})
+        return 1
+    order = parse_exchange_order(row, fallback_symbol=symbol)
+    _print(
+        {
+            "found": True,
+            "order_link_id": order.client_order_id,
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "type": order.order_type,
+            "status": order.status,
+            "qty": order.qty,
+            "filled_qty": order.filled_qty,
+            "avg_price": order.avg_price,
+            "reduce_only": order.reduce_only,
+            "confirmed_fill": order.is_confirmed_fill(),
+            "note": "Created/New is not a fill",
+        }
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -523,6 +556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "account",
         "stream",
         "sync-candles",
+        "order-status",
     }
     if args.command in {"backtest", "signal", "paper"}:
         needs_client = not getattr(args, "csv", None) and not getattr(args, "from_db", False)
@@ -568,6 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             client=client,
             kill_switch=kill_switch,
         ),
+        "order-status": lambda: cmd_order_status(client, symbol, args.link_id),
     }
     try:
         return commands[args.command]()

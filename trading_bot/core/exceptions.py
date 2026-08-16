@@ -32,6 +32,18 @@ class InvalidOrderError(BybitAPIError):
     pass
 
 
+class DuplicateClientOrderError(InvalidOrderError):
+    """Bybit rejected the request because orderLinkId was already used."""
+
+
+class LiveOrdersBlockedError(TradingBotError):
+    """Mode/flags forbid sending this order (paper, missing LIVE_TRADING_CONFIRM, etc.)."""
+
+
+class OrderNotFilledError(TradingBotError):
+    """Place succeeded or was accepted, but the order was not confirmed Filled in time."""
+
+
 class ConnectionLostError(TradingBotError):
     pass
 

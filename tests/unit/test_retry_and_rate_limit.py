@@ -21,6 +21,9 @@ def test_rate_limiter_allows_configured_rate() -> None:
 def test_retryable_classification() -> None:
     assert is_retryable(RateLimitError("slow down", ret_code=10006))
     assert not is_retryable(AuthenticationError("bad key", ret_code=10003))
+    from trading_bot.core.exceptions import InvalidOrderError
+
+    assert not is_retryable(InvalidOrderError("bad qty", ret_code=110001))
 
 
 def test_retry_succeeds_after_transient_errors() -> None:

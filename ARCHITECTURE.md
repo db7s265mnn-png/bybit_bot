@@ -1,6 +1,6 @@
 # Архитектура торгового бота Bybit V5
 
-Статус: **Phases 1–6** (подключение, SQLite, стратегия, риск, backtest, paper). Testnet/mainnet execution — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
+Статус: **Phases 1–7** (подключение, SQLite, стратегия, риск, backtest, paper, order manager). Testnet/mainnet live-цикл — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
 
 ## Цель
 
@@ -12,7 +12,7 @@
 |---|---|---|---|
 | `backtest` | Исторические свечи | Симуляция | Phase 4 **готово** |
 | `paper` | Realtime Bybit | Симуляция, без API-ордеров | Phase 6 **готово** |
-| `testnet` | Bybit Testnet API | Реальные testnet-ордера | Phase 8 |
+| `testnet` | Bybit Testnet API | Реальные testnet-ордера через OrderManager | Phase 8 |
 | `mainnet` | Bybit Mainnet API | Реальные ордера только при `LIVE_TRADING_CONFIRM=true` | Phase 10 |
 
 `exchange.testnet` выбирает хост API (`api-testnet.bybit.com` / `api.bybit.com`). `MODE=testnet` требует `testnet: true`. `MODE=mainnet` требует `testnet: false`.
@@ -43,7 +43,7 @@ Look-ahead (backtest): сигнал по закрытию свечи N испо�
 
 ```
 trading_bot/
-  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal, paper
+  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal, paper, order-status
   config/                 YAML + overlay из .env
   core/                   ошибки, retry, kill switch, redaction, id событий
   exchange/               REST (pybit), rate limit, WebSocket, спецификация инструмента
@@ -52,7 +52,7 @@ trading_bot/
   monitoring/             structlog + redaction секретов
   strategy/               интерфейс + ema_crossover (регистрируется декоратором)
   risk/                   sizing от стопа, дневной лимит, portfolio cap
-  execution/              slippage/spread/fees + SimulatedBroker (paper/backtest)
+  execution/              slippage/spread/fees + SimulatedBroker + OrderManager
   backtest/               event-driven engine, метрики, OOS, walk-forward
   paper/                  Phase 6: live/replay paper loop, SQLite restore
   database/               SQLite, схема готова к PostgreSQL
@@ -74,7 +74,7 @@ tests/integration
 | `account` | Снимок баланса/позиций/ордеров | Не кэширует как истину между рестартами |
 | `strategy` | Сигнал | Не вызывает API ордеров |
 | `risk` | Лимиты и sizing от стопа | Не обходит Kill Switch |
-| `execution` | Исполнение + комиссии/slippage | Не считает сигнал |
+| `execution` | Исполнение + комиссии/slippage; OrderManager — идемпотентность и SL | Не считает сигнал |
 | `backtest` | Event-driven симуляция | Не подглядывает в будущее |
 | `paper` | Realtime/replay, виртуальные ордера в SQLite | Не вызывает API ордеров |
 | `monitoring` | Логи/алерты | Не пишет secret/token в лог |
@@ -98,7 +98,7 @@ tests/integration
 
 ## Kill Switch
 
-При активации: новые позиции/ордера запрещены; политика по открытым позициям задаётся `kill_switch.position_policy` (`hold` по умолчанию, `flatten` — закрытие виртуальных paper-позиций по следующей цене; live flatten — Phase 8). Состояние пишется в лог с `event_id`.
+При активации: новые позиции/ордера запрещены; reduce-only flatten и cancel всё ещё допустимы. Политика по открытым позициям задаётся `kill_switch.position_policy` (`hold` по умолчанию, `flatten` — paper по следующей цене, live — `OrderManager.flatten_symbol`). Состояние пишется в лог с `event_id`.
 
 ## Противоречия ТЗ (решения)
 
@@ -118,9 +118,9 @@ tests/integration
 - **Rate limit.** Default linear ~10 req/s на UID; IP 600/5s; 403 «access too frequent» — бан ~10 минут. Realtime — через WS, REST централизован.
 - **Kline:** newest-first, max 1000, незакрытая свеча в `close` = last trade. Не торговать по close незакрытой свечи.
 - **instruments-info:** >500 linear, нужна пагинация; tick/lot/maxQty меняются. Всегда с API.
-- **HTTP 200 ≠ fill.** `retCode` и фактический статус ордера (REST/WS) обязательны (Order Manager, Phase 7).
-- **Stop-loss на бирже.** `stopLoss` / conditional. Если SL не подтверждён — CRITICAL + авария (Phase 7–8).
-- **orderLinkId** для идемпотентности (дубли WS/retry/рестарт).
+- **HTTP 200 ≠ fill.** `retCode` и фактический статус ордера (REST/WS) обязательны. `Created`/`New` не считаются исполнением (Order Manager, Phase 7 **готово**).
+- **Stop-loss на бирже.** `stopLoss` на entry + `set_trading_stop`. Если SL не подтверждён на позиции — CRITICAL, flatten reduce-only, `StopLossMissingError`.
+- **orderLinkId** для идемпотентности (дубли WS/retry/рестарт). Max 36 символов.
 - **WS:** ping каждые 20с, иначе disconnect; reconnect + resubscribe; при обрыве — `Trading temporarily paused`.
 - **Private WS HMAC:** `GET/realtime{expires}` — expires в ms.
 - **Права ключа:** бот отказывается работать, если есть `Withdraw`.
@@ -138,7 +138,7 @@ tests/integration
 4. **Phase 4:** event-driven backtest, метрики, OOS, walk-forward.
 5. **Phase 5:** risk manager / position sizing.
 6. **Phase 6:** paper engine (live kline / CSV replay, simulated fills, restore-on-start). **готово**
-7. Phase 7: order manager, idempotency, SL/TP на бирже.
+7. **Phase 7:** order manager, idempotency, fill confirmation, SL/TP на бирже. **готово**
 8. Phase 8: testnet live loop + restore-on-start.
 9. Phase 9: Telegram.
 10. Phase 10: mainnet guards.

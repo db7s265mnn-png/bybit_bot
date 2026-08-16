@@ -22,7 +22,8 @@ class KillSwitch:
     """Emergency halt. New entries/orders must check this before sending.
 
     Paper trading honors the policy: hold keeps virtual positions (SL/TP still apply);
-    flatten closes them at the next simulated market price. Live exchange flatten is Phase 8.
+    flatten closes them at the next simulated market price. Live flatten uses
+    OrderManager.reduce-only market close (Phase 7).
     """
 
     def __init__(self, policy: KillSwitchPolicy = KillSwitchPolicy.HOLD) -> None:

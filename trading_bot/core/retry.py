@@ -10,7 +10,10 @@ from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attem
 from trading_bot.core.exceptions import (
     AuthenticationError,
     BybitAPIError,
+    DuplicateClientOrderError,
     GeoRestrictedError,
+    InvalidOrderError,
+    LiveOrdersBlockedError,
     RateLimitError,
     WithdrawPermissionError,
 )
@@ -22,6 +25,9 @@ _NON_RETRYABLE = (
     AuthenticationError,
     WithdrawPermissionError,
     GeoRestrictedError,
+    InvalidOrderError,
+    DuplicateClientOrderError,
+    LiveOrdersBlockedError,
 )
 
 _RETRYABLE_RET_CODES = {

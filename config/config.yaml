@@ -99,3 +99,15 @@ telegram:
   allowed_user_ids: []
   heartbeat_interval_sec: 60
   stale_market_alert_sec: 30
+
+orders:
+  # One-way mode (positionIdx=0). Hedge 1/2 is not used in v1.
+  position_idx: 0
+  fill_timeout_sec: 15
+  poll_interval_sec: 0.25
+  sl_confirm_attempts: 3
+  sl_confirm_delay_sec: 0.4
+  flatten_on_missing_sl: true
+  tpsl_mode: Full
+  time_in_force_market: IOC
+  time_in_force_limit: GTC

@@ -3,17 +3,20 @@ from trading_bot.core.exceptions import (
     BybitAPIError,
     ConfigError,
     ConnectionLostError,
+    DuplicateClientOrderError,
     GeoRestrictedError,
     InsufficientBalanceError,
     InvalidOrderError,
     KillSwitchActiveError,
+    LiveOrdersBlockedError,
+    OrderNotFilledError,
     RateLimitError,
     StaleMarketDataError,
     StopLossMissingError,
     TradingBotError,
     WithdrawPermissionError,
 )
-from trading_bot.core.ids import new_event_id
+from trading_bot.core.ids import new_event_id, new_order_link_id
 from trading_bot.core.kill_switch import KillSwitch
 from trading_bot.core.types import ConnectionState, Side, SignalType, TradingMode
 
@@ -23,11 +26,14 @@ __all__ = [
     "ConfigError",
     "ConnectionLostError",
     "ConnectionState",
+    "DuplicateClientOrderError",
     "GeoRestrictedError",
     "InsufficientBalanceError",
     "InvalidOrderError",
     "KillSwitch",
     "KillSwitchActiveError",
+    "LiveOrdersBlockedError",
+    "OrderNotFilledError",
     "RateLimitError",
     "Side",
     "SignalType",
@@ -37,4 +43,5 @@ __all__ = [
     "TradingMode",
     "WithdrawPermissionError",
     "new_event_id",
+    "new_order_link_id",
 ]

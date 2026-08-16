@@ -4,7 +4,7 @@
 
 **Исторические результаты (backtest / paper) не гарантируют будущую прибыль.** Базовая EMA-стратегия нужна только для проверки контура и не считается рабочей торговой системой.
 
-Сейчас реализованы **Phases 1–6**: подключение к Bybit V5, SQLite, интерфейс стратегии (EMA 20/50 + ATR SL), risk manager, event-driven backtest (OOS + walk-forward) и paper trading (виртуальные ордера, без API-заявок).
+Сейчас реализованы **Phases 1–7**: подключение к Bybit V5, SQLite, стратегия, risk, backtest, paper и Order Manager (идемпотентность, подтверждение fill, SL на бирже). Live-цикл testnet ещё не включён.
 
 Подробности архитектуры, библиотек и ограничений Bybit: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -19,7 +19,7 @@
 - Kill Switch как состояние (исполнение политики — в следующих фазах).
 - Режимы `backtest | paper | testnet | mainnet`; на mainnet — баннер и флаг `LIVE_TRADING_CONFIRM`.
 
-Ещё не реализовано: боевые ордера / testnet loop, Telegram, Docker.
+Ещё не реализовано: testnet live loop, Telegram, Docker.
 
 ## Требования
 
@@ -148,6 +148,23 @@ python -m trading_bot paper --seconds 60 --symbol BTCUSDT
 
 Каждый отчёт содержит предупреждение: симуляция не гарантирует будущую прибыль и не является заявлением, что стратегия прибыльна.
 
+## Order Manager (Phase 7)
+
+Реальные заявки идут только через `OrderManager`. CLI **не** выставляет ордера.
+
+- `orderLinkId` уникален (до 36 символов); повтор с тем же id не создаёт вторую заявку.
+- HTTP 200 / `Created` / `New` **не** считаются fill. Статус подтверждается REST или private WS (`order`).
+- Частичный fill не добирается второй заявкой автоматически.
+- После входа SL должен быть виден на позиции (`stopLoss` в entry + `set_trading_stop`). Иначе CRITICAL, reduce-only flatten, ошибка.
+- Paper/backtest не могут вызвать place. Mainnet-вход требует `LIVE_TRADING_CONFIRM=true`. Reduce-only flatten/cancel на mainnet без этого флага разрешены (защита).
+- Kill switch блокирует новые входы, flatten всё ещё можно.
+
+```bash
+python -m trading_bot order-status --link-id <orderLinkId> --symbol BTCUSDT
+```
+
+Live-цикл стратегии на testnet — Phase 8.
+
 ## Запуск Phase 1 (рынок / аккаунт)
 
 Приватные:
@@ -163,15 +180,15 @@ WARNING:
 REAL MONEY TRADING ENABLED
 ```
 
-Без `LIVE_TRADING_CONFIRM=true` реальные ордера не будут отправляться (когда появится Order Manager).
+Без `LIVE_TRADING_CONFIRM=true` новые mainnet-ордера не отправляются. Cancel / SL / reduce-only flatten на mainnet этим флагом не блокируются.
 
 ## Backtest / Paper / Testnet / Mainnet
 
 | Режим | Сейчас | Позже |
 |---|---|---|
 | `MODE=backtest` | `python -m trading_bot backtest` | — |
-| `MODE=paper` | `python -m trading_bot paper` | Phase 7–8: боевой контур |
-| `MODE=testnet` | REST/WS testnet, `account` | Phase 8: боевой цикл с ордерами |
+| `MODE=paper` | `python -m trading_bot paper` | — |
+| `MODE=testnet` | REST/WS, `account`, OrderManager | Phase 8: боевой цикл с ордерами |
 | `MODE=mainnet` | баннер + confirm | Phase 10: малый live |
 
 ## Telegram
@@ -192,14 +209,12 @@ TELEGRAM_ALLOWED_USER_IDS=
 
 ## Emergency shutdown
 
-Сейчас: остановить процесс (`Ctrl+C` / `kill`). Kill Switch в коде блокирует новые ордера после `activate()`, но автоматического flatten ещё нет.
+Сейчас: остановить процесс (`Ctrl+C` / `kill`). Kill Switch блокирует новые входы. `OrderManager.flatten_symbol` закрывает позицию reduce-only market (для live-цикла Phase 8).
 
-Когда появится исполнение:
-
-1. Telegram `/kill` или локальный kill switch.
+1. Telegram `/kill` (Phase 9) или локальный kill switch.
 2. Новые ордера не отправляются.
 3. Позиции — по `kill_switch.position_policy` (`hold` или `flatten`).
-4. На бирже должны остаться защитные Stop Loss (требование Phase 7).
+4. На бирже должен остаться подтверждённый Stop Loss. Если SL не подтвердился — бот flatten'ит и падает с `StopLossMissingError`.
 
 Если бот или VPS упал, полагайтесь на **биржевой** SL, не на Python-процесс.
 

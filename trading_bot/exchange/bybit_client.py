@@ -13,9 +13,11 @@ from trading_bot.config.models import AppConfig, ProductCategory
 from trading_bot.core.exceptions import (
     AuthenticationError,
     BybitAPIError,
+    DuplicateClientOrderError,
     GeoRestrictedError,
     InsufficientBalanceError,
     InvalidOrderError,
+    LiveOrdersBlockedError,
     RateLimitError,
     WithdrawPermissionError,
 )
@@ -31,7 +33,22 @@ logger = get_logger("trading_bot.exchange")
 _AUTH_CODES = {10003, 10004, 10005, 10007, 10010, 33004}
 _RATE_CODES = {10006, 10018, 10429, 429}
 _BALANCE_CODES = {110007, 110004}
-_ORDER_CODES = {10001, 110001, 110003, 110004, 110094}
+_ORDER_CODES = {10001, 110001, 110003, 110004, 110012, 110017, 110025, 110043, 110090, 110094}
+_DUPLICATE_CODES = {110072}
+
+
+def _error_from_code(message: str, *, ret_code: int | None, status_code: int | None = None) -> BybitAPIError:
+    if ret_code in _DUPLICATE_CODES:
+        return DuplicateClientOrderError(message, ret_code=ret_code, status_code=status_code)
+    if ret_code in _AUTH_CODES:
+        return AuthenticationError(message, ret_code=ret_code, status_code=status_code)
+    if ret_code in _RATE_CODES:
+        return RateLimitError(message, ret_code=ret_code, status_code=status_code)
+    if ret_code in _BALANCE_CODES:
+        return InsufficientBalanceError(message, ret_code=ret_code, status_code=status_code)
+    if ret_code in _ORDER_CODES:
+        return InvalidOrderError(message, ret_code=ret_code, status_code=status_code)
+    return BybitAPIError(message, ret_code=ret_code, status_code=status_code)
 
 
 def _looks_geo_restricted(message: str) -> bool:
@@ -47,15 +64,15 @@ def _map_pybit_error(exc: Exception) -> Exception:
     status = getattr(exc, "status_code", None)
     if isinstance(exc, InvalidRequestError):
         code = status
-        if code in _AUTH_CODES:
-            return AuthenticationError(message, ret_code=code, status_code=code)
-        if code in _RATE_CODES:
-            return RateLimitError(message, ret_code=code, status_code=code)
-        if code in _BALANCE_CODES:
-            return InsufficientBalanceError(message, ret_code=code, status_code=code)
-        if code in _ORDER_CODES:
-            return InvalidOrderError(message, ret_code=code, status_code=code)
-        return BybitAPIError(message, ret_code=code, status_code=code)
+        if _looks_geo_restricted(message):
+            return GeoRestrictedError(
+                "Bybit blocked this IP/country (HTTP 403). "
+                "This is not a rate-limit retry. Use a VPS/IP that Bybit allows. "
+                f"Original: {message}",
+                ret_code=code,
+                status_code=code,
+            )
+        return _error_from_code(message, ret_code=code, status_code=code)
     if isinstance(exc, FailedRequestError):
         code = status
         if _looks_geo_restricted(message):
@@ -128,7 +145,7 @@ class BybitRESTClient:
             raise BybitAPIError("unexpected Bybit response type")
         ret_code = int(response.get("retCode") or 0)
         if ret_code != 0:
-            raise BybitAPIError(
+            raise _error_from_code(
                 redact_text(str(response.get("retMsg") or "bybit error")),
                 ret_code=ret_code,
             )
@@ -248,6 +265,158 @@ class BybitRESTClient:
         if symbol:
             kwargs["symbol"] = symbol
         return self._call("get_executions", **kwargs)
+
+    def _assert_mutating(self, *, new_entry: bool = False) -> None:
+        if new_entry and not self._config.live_orders_allowed():
+            raise LiveOrdersBlockedError(
+                f"new orders blocked in mode={self._config.system.mode.value} "
+                f"(live_trading_confirm={self._config.system.live_trading_confirm})"
+            )
+        if not self._config.mutating_orders_allowed():
+            raise LiveOrdersBlockedError(
+                f"order API blocked in mode={self._config.system.mode.value}; "
+                "paper/backtest must use SimulatedBroker"
+            )
+
+    def place_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        qty: str,
+        order_link_id: str,
+        price: str | None = None,
+        time_in_force: str | None = None,
+        reduce_only: bool = False,
+        stop_loss: str | None = None,
+        take_profit: str | None = None,
+        position_idx: int = 0,
+        tpsl_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /v5/order/create. HTTP 200 / retCode 0 is not a fill — confirm via query/WS."""
+        self._require_keys()
+        self._assert_mutating(new_entry=not reduce_only)
+        kwargs: dict[str, Any] = {
+            "category": self.category.value,
+            "symbol": symbol,
+            "side": side,
+            "orderType": order_type,
+            "qty": qty,
+            "orderLinkId": order_link_id,
+            "positionIdx": position_idx,
+            "reduceOnly": reduce_only,
+        }
+        if price is not None:
+            kwargs["price"] = price
+        if time_in_force is not None:
+            kwargs["timeInForce"] = time_in_force
+        if stop_loss:
+            kwargs["stopLoss"] = stop_loss
+        if take_profit:
+            kwargs["takeProfit"] = take_profit
+        if tpsl_mode and (stop_loss or take_profit):
+            kwargs["tpslMode"] = tpsl_mode
+        logger.info(
+            "place_order_request",
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            qty=qty,
+            order_link_id=order_link_id,
+            reduce_only=reduce_only,
+        )
+        return self._call("place_order", **kwargs)
+
+    def cancel_order(
+        self,
+        *,
+        symbol: str,
+        order_link_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_keys()
+        self._assert_mutating()
+        if not order_link_id and not order_id:
+            raise InvalidOrderError("cancel_order requires order_link_id or order_id")
+        kwargs: dict[str, Any] = {"category": self.category.value, "symbol": symbol}
+        if order_id:
+            kwargs["orderId"] = order_id
+        if order_link_id:
+            kwargs["orderLinkId"] = order_link_id
+        return self._call("cancel_order", **kwargs)
+
+    def get_order_history(
+        self,
+        *,
+        symbol: str | None = None,
+        order_link_id: str | None = None,
+        order_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        self._require_keys()
+        kwargs: dict[str, Any] = {"category": self.category.value, "limit": limit}
+        if symbol:
+            kwargs["symbol"] = symbol
+        if order_link_id:
+            kwargs["orderLinkId"] = order_link_id
+        if order_id:
+            kwargs["orderId"] = order_id
+        return self._call("get_order_history", **kwargs)
+
+    def get_order(
+        self,
+        *,
+        symbol: str,
+        order_link_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Open orders first, then history. Empty means the id is unknown, not a fill."""
+        self._require_keys()
+        open_kwargs: dict[str, Any] = {"category": self.category.value, "symbol": symbol}
+        if order_link_id:
+            open_kwargs["orderLinkId"] = order_link_id
+        if order_id:
+            open_kwargs["orderId"] = order_id
+        payload = self._call("get_open_orders", **open_kwargs)
+        rows = (payload.get("result") or {}).get("list") or []
+        if rows:
+            return rows[0]
+        history = self.get_order_history(
+            symbol=symbol, order_link_id=order_link_id, order_id=order_id, limit=20
+        )
+        hist_rows = (history.get("result") or {}).get("list") or []
+        if hist_rows:
+            return hist_rows[0]
+        return None
+
+    def set_trading_stop(
+        self,
+        *,
+        symbol: str,
+        stop_loss: str | None = None,
+        take_profit: str | None = None,
+        position_idx: int = 0,
+        tpsl_mode: str = "Full",
+        sl_trigger_by: str = "LastPrice",
+        tp_trigger_by: str = "LastPrice",
+    ) -> dict[str, Any]:
+        self._require_keys()
+        self._assert_mutating()
+        kwargs: dict[str, Any] = {
+            "category": self.category.value,
+            "symbol": symbol,
+            "positionIdx": position_idx,
+            "tpslMode": tpsl_mode,
+        }
+        if stop_loss:
+            kwargs["stopLoss"] = stop_loss
+            kwargs["slTriggerBy"] = sl_trigger_by
+        if take_profit:
+            kwargs["takeProfit"] = take_profit
+            kwargs["tpTriggerBy"] = tp_trigger_by
+        logger.info("set_trading_stop_request", symbol=symbol, has_sl=bool(stop_loss), has_tp=bool(take_profit))
+        return self._call("set_trading_stop", **kwargs)
 
     def get_fee_rates(self, symbol: str | None = None) -> dict[str, Any]:
         self._require_keys()

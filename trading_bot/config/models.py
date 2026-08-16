@@ -215,6 +215,20 @@ class TelegramConfig(BaseModel):
     stale_market_alert_sec: int = Field(default=30, ge=5)
 
 
+class OrdersConfig(BaseModel):
+    """Live/testnet order-manager tunables. Paper/backtest never hit these APIs."""
+
+    fill_timeout_sec: float = Field(default=15.0, gt=0, le=120)
+    poll_interval_sec: float = Field(default=0.25, gt=0, le=5)
+    sl_confirm_attempts: int = Field(default=3, ge=1, le=10)
+    sl_confirm_delay_sec: float = Field(default=0.4, gt=0, le=10)
+    position_idx: int = Field(default=0, ge=0, le=2)
+    time_in_force_market: str = "IOC"
+    time_in_force_limit: str = "GTC"
+    flatten_on_missing_sl: bool = True
+    tpsl_mode: str = "Full"
+
+
 class Secrets(BaseModel):
     """Loaded from environment / .env only. Never written to YAML."""
 
@@ -255,6 +269,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    orders: OrdersConfig = Field(default_factory=OrdersConfig)
     secrets: Secrets = Field(default_factory=Secrets)
 
     @model_validator(mode="after")
@@ -272,8 +287,12 @@ class AppConfig(BaseModel):
     def requires_bybit_keys(self) -> bool:
         return self.system.mode in {TradingMode.TESTNET, TradingMode.MAINNET}
 
+    def mutating_orders_allowed(self) -> bool:
+        """Cancel / trading-stop / reduce-only flatten. Never in paper or backtest."""
+        return self.system.mode in {TradingMode.TESTNET, TradingMode.MAINNET}
+
     def live_orders_allowed(self) -> bool:
-        """Mainnet orders require an explicit confirmation flag. Testnet orders do not."""
+        """New risk-increasing orders. Mainnet also requires LIVE_TRADING_CONFIRM."""
         if self.system.mode is TradingMode.MAINNET:
             return self.system.live_trading_confirm
         return self.system.mode is TradingMode.TESTNET
@@ -287,5 +306,6 @@ class AppConfig(BaseModel):
             "symbols": list(self.exchange.symbols),
             "timeframe": self.trading.timeframe,
             "live_orders_allowed": self.live_orders_allowed(),
+            "mutating_orders_allowed": self.mutating_orders_allowed(),
             "has_api_keys": self.secrets.has_bybit_keys(),
         }

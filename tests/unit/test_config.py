@@ -56,6 +56,27 @@ def test_mainnet_blocks_orders_without_confirm(tmp_path: Path, monkeypatch: pyte
     config = load_config(path)
     assert config.system.mode is TradingMode.MAINNET
     assert config.live_orders_allowed() is False
+    assert config.mutating_orders_allowed() is True
+
+
+@pytest.mark.unit
+def test_testnet_allows_orders_without_confirm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump(
+            {
+                "exchange": {"testnet": True, "symbols": ["BTCUSDT"]},
+                "system": {"mode": "testnet", "live_trading_confirm": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODE", "testnet")
+    monkeypatch.setenv("BYBIT_TESTNET", "true")
+    monkeypatch.setenv("LIVE_TRADING_CONFIRM", "false")
+    config = load_config(path)
+    assert config.live_orders_allowed() is True
+    assert config.mutating_orders_allowed() is True
 
 
 @pytest.mark.unit
