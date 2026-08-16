@@ -4,7 +4,7 @@
 
 **Исторические результаты (backtest / paper) не гарантируют будущую прибыль.** Базовая EMA-стратегия нужна только для проверки контура и не считается рабочей торговой системой.
 
-Сейчас реализованы **Phases 1–5**: подключение к Bybit V5, SQLite, интерфейс стратегии (EMA 20/50 + ATR SL), risk manager и event-driven backtest (OOS + walk-forward).
+Сейчас реализованы **Phases 1–6**: подключение к Bybit V5, SQLite, интерфейс стратегии (EMA 20/50 + ATR SL), risk manager, event-driven backtest (OOS + walk-forward) и paper trading (виртуальные ордера, без API-заявок).
 
 Подробности архитектуры, библиотек и ограничений Bybit: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -19,7 +19,7 @@
 - Kill Switch как состояние (исполнение политики — в следующих фазах).
 - Режимы `backtest | paper | testnet | mainnet`; на mainnet — баннер и флаг `LIVE_TRADING_CONFIRM`.
 
-Ещё не реализовано: paper engine, боевые ордера / testnet loop, Telegram, Docker.
+Ещё не реализовано: боевые ордера / testnet loop, Telegram, Docker.
 
 ## Требования
 
@@ -131,6 +131,23 @@ python -m trading_bot signal --from-db --limit 200
 
 Размер позиции: `risk_amount / (расстояние до SL + комиссии + slippage)`, не фиксированный % депозита.
 
+## Paper trading
+
+Виртуальный счёт, те же strategy + risk + SimulatedBroker, что и backtest. **Реальные ордера не отправляются.** Сигнал по закрытию свечи N, fill по open N+1 (без look-ahead). SL/TP/funding/fees/slippage учитываются. Состояние (equity, открытые позиции, pending) пишется в SQLite и поднимается после рестарта (`--session`). Пока WebSocket не CONNECTED, новые входы не открываются.
+
+```bash
+# без Bybit, тот же движок:
+python -m trading_bot paper --csv path/to/ohlcv.csv --symbol BTCUSDT --session demo
+
+# из SQLite после sync-candles:
+python -m trading_bot paper --from-db --symbol BTCUSDT
+
+# live public klines (нужен IP, который Bybit не режет CloudFront 403):
+python -m trading_bot paper --seconds 60 --symbol BTCUSDT
+```
+
+Каждый отчёт содержит предупреждение: симуляция не гарантирует будущую прибыль и не является заявлением, что стратегия прибыльна.
+
 ## Запуск Phase 1 (рынок / аккаунт)
 
 Приватные:
@@ -152,8 +169,8 @@ REAL MONEY TRADING ENABLED
 
 | Режим | Сейчас | Позже |
 |---|---|---|
-| `MODE=backtest` | конфиг валиден | Phase 4: `python -m trading_bot backtest` |
-| `MODE=paper` | публичный рынок + WS | Phase 6: симуляция ордеров в БД |
+| `MODE=backtest` | `python -m trading_bot backtest` | — |
+| `MODE=paper` | `python -m trading_bot paper` | Phase 7–8: боевой контур |
 | `MODE=testnet` | REST/WS testnet, `account` | Phase 8: боевой цикл с ордерами |
 | `MODE=mainnet` | баннер + confirm | Phase 10: малый live |
 

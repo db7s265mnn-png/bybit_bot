@@ -30,6 +30,24 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def _row_str(row: sqlite3.Row, key: str, default: str = "") -> str:
+    keys = row.keys()
+    if key not in keys:
+        return default
+    value = row[key]
+    if value is None:
+        return default
+    return str(value)
+
+
+def _row_json(row: sqlite3.Row, key: str) -> dict[str, Any] | None:
+    raw = _row_str(row, key, "")
+    if not raw:
+        return None
+    loaded = json.loads(raw)
+    return loaded if isinstance(loaded, dict) else None
+
+
 def sqlite_path_from_url(url: str) -> str:
     """Translate SQLAlchemy-style sqlite URLs. PostgreSQL URLs are rejected until an adapter exists."""
     if url.startswith("postgres"):
@@ -94,7 +112,8 @@ SCHEMA = [
         net_pnl TEXT,
         strategy TEXT NOT NULL,
         stop_loss TEXT,
-        take_profit TEXT
+        take_profit TEXT,
+        session_id TEXT
     )
     """,
     """
@@ -108,7 +127,9 @@ SCHEMA = [
         quantity TEXT NOT NULL,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        session_id TEXT,
+        payload TEXT
     )
     """,
     """
@@ -120,9 +141,26 @@ SCHEMA = [
         message TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS paper_accounts (
+        session_id TEXT PRIMARY KEY,
+        equity TEXT NOT NULL,
+        initial_balance TEXT NOT NULL,
+        last_candles_json TEXT,
+        consecutive_losses INTEGER NOT NULL DEFAULT 0,
+        day_key TEXT,
+        day_start_equity TEXT,
+        daily_realized TEXT,
+        pending_json TEXT,
+        strategy TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_candles_symbol_interval ON candles(symbol, interval, start_ms)",
     "CREATE INDEX IF NOT EXISTS idx_trades_symbol_time ON trades(symbol, entry_time)",
+    "CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_orders_client ON orders(client_order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_events_time ON bot_events(timestamp)",
 ]
 
@@ -145,6 +183,7 @@ class TradeRecord:
     strategy: str
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None
+    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -158,6 +197,23 @@ class OrderRecord:
     quantity: Decimal
     status: str
     created_at: datetime
+    updated_at: datetime
+    session_id: str = ""
+    payload: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PaperAccount:
+    session_id: str
+    equity: Decimal
+    initial_balance: Decimal
+    last_candles: dict[str, int]
+    consecutive_losses: int
+    day_key: str
+    day_start_equity: Decimal
+    daily_realized: Decimal
+    pending_json: str
+    strategy: str
     updated_at: datetime
 
 
@@ -185,6 +241,15 @@ class Database:
         with self._conn:
             for statement in SCHEMA:
                 self._conn.execute(statement)
+            self._ensure_column("trades", "session_id", "TEXT")
+            self._ensure_column("orders", "session_id", "TEXT")
+            self._ensure_column("orders", "payload", "TEXT")
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        names = {str(row[1]) for row in rows}
+        if column not in names:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -302,8 +367,8 @@ class Database:
                 INSERT INTO trades(
                     trade_id, symbol, side, entry_price, exit_price, quantity,
                     entry_time, exit_time, gross_pnl, fees, funding, slippage,
-                    net_pnl, strategy, stop_loss, take_profit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    net_pnl, strategy, stop_loss, take_profit, session_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_id) DO UPDATE SET
                     exit_price=excluded.exit_price,
                     exit_time=excluded.exit_time,
@@ -313,7 +378,8 @@ class Database:
                     slippage=excluded.slippage,
                     net_pnl=excluded.net_pnl,
                     stop_loss=excluded.stop_loss,
-                    take_profit=excluded.take_profit
+                    take_profit=excluded.take_profit,
+                    session_id=COALESCE(excluded.session_id, trades.session_id)
                 """,
                 (
                     trade.trade_id,
@@ -332,15 +398,27 @@ class Database:
                     trade.strategy,
                     None if trade.stop_loss is None else str(trade.stop_loss),
                     None if trade.take_profit is None else str(trade.take_profit),
+                    trade.session_id or None,
                 ),
             )
 
-    def list_trades(self, symbol: str | None = None) -> list[TradeRecord]:
-        sql = "SELECT * FROM trades"
+    def list_trades(
+        self,
+        symbol: str | None = None,
+        *,
+        session_id: str | None = None,
+        open_only: bool = False,
+    ) -> list[TradeRecord]:
+        sql = "SELECT * FROM trades WHERE 1=1"
         params: list[Any] = []
         if symbol:
-            sql += " WHERE symbol=?"
+            sql += " AND symbol=?"
             params.append(symbol)
+        if session_id is not None:
+            sql += " AND IFNULL(session_id,'')=?"
+            params.append(session_id)
+        if open_only:
+            sql += " AND exit_price IS NULL"
         sql += " ORDER BY entry_time ASC"
         return [self._trade_from_row(row) for row in self._conn.execute(sql, params)]
 
@@ -350,13 +428,15 @@ class Database:
                 """
                 INSERT INTO orders(
                     order_id, client_order_id, symbol, side, type, price, quantity,
-                    status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, created_at, updated_at, session_id, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET
                     status=excluded.status,
                     price=excluded.price,
                     quantity=excluded.quantity,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    session_id=COALESCE(excluded.session_id, orders.session_id),
+                    payload=COALESCE(excluded.payload, orders.payload)
                 """,
                 (
                     order.order_id,
@@ -369,6 +449,8 @@ class Database:
                     order.status,
                     _utc_iso(order.created_at),
                     _utc_iso(order.updated_at),
+                    order.session_id or None,
+                    None if not order.payload else json.dumps(order.payload, default=str),
                 ),
             )
 
@@ -378,6 +460,87 @@ class Database:
             (client_order_id,),
         ).fetchone()
         return None if row is None else self._order_from_row(row)
+
+    def list_orders(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        symbol: str | None = None,
+    ) -> list[OrderRecord]:
+        sql = "SELECT * FROM orders WHERE 1=1"
+        params: list[Any] = []
+        if session_id is not None:
+            sql += " AND IFNULL(session_id,'')=?"
+            params.append(session_id)
+        if status is not None:
+            sql += " AND status=?"
+            params.append(status)
+        if symbol is not None:
+            sql += " AND symbol=?"
+            params.append(symbol)
+        sql += " ORDER BY created_at ASC"
+        return [self._order_from_row(row) for row in self._conn.execute(sql, params)]
+
+    def save_paper_account(self, account: PaperAccount) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO paper_accounts(
+                    session_id, equity, initial_balance, last_candles_json,
+                    consecutive_losses, day_key, day_start_equity, daily_realized,
+                    pending_json, strategy, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    equity=excluded.equity,
+                    initial_balance=excluded.initial_balance,
+                    last_candles_json=excluded.last_candles_json,
+                    consecutive_losses=excluded.consecutive_losses,
+                    day_key=excluded.day_key,
+                    day_start_equity=excluded.day_start_equity,
+                    daily_realized=excluded.daily_realized,
+                    pending_json=excluded.pending_json,
+                    strategy=excluded.strategy,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    account.session_id,
+                    str(account.equity),
+                    str(account.initial_balance),
+                    json.dumps(account.last_candles),
+                    account.consecutive_losses,
+                    account.day_key,
+                    str(account.day_start_equity),
+                    str(account.daily_realized),
+                    account.pending_json,
+                    account.strategy,
+                    _utc_iso(account.updated_at),
+                ),
+            )
+
+    def load_paper_account(self, session_id: str) -> PaperAccount | None:
+        row = self._conn.execute(
+            "SELECT * FROM paper_accounts WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        raw_last = row["last_candles_json"]
+        last = json.loads(raw_last) if raw_last else {}
+        last_candles = {str(k): int(v) for k, v in last.items()}
+        return PaperAccount(
+            session_id=row["session_id"],
+            equity=to_decimal(row["equity"]),
+            initial_balance=to_decimal(row["initial_balance"]),
+            last_candles=last_candles,
+            consecutive_losses=int(row["consecutive_losses"] or 0),
+            day_key=row["day_key"] or "",
+            day_start_equity=to_decimal(row["day_start_equity"] or "0"),
+            daily_realized=to_decimal(row["daily_realized"] or "0"),
+            pending_json=row["pending_json"] or "",
+            strategy=row["strategy"],
+            updated_at=_parse_dt(row["updated_at"]) or datetime.now(timezone.utc),
+        )
 
     def record_event(
         self,
@@ -440,6 +603,7 @@ class Database:
             strategy=row["strategy"],
             stop_loss=None if row["stop_loss"] is None else to_decimal(row["stop_loss"]),
             take_profit=None if row["take_profit"] is None else to_decimal(row["take_profit"]),
+            session_id=_row_str(row, "session_id"),
         )
 
     @staticmethod
@@ -455,4 +619,6 @@ class Database:
             status=row["status"],
             created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
             updated_at=_parse_dt(row["updated_at"]) or datetime.now(timezone.utc),
+            session_id=_row_str(row, "session_id"),
+            payload=_row_json(row, "payload"),
         )

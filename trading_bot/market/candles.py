@@ -91,6 +91,36 @@ def parse_kline_row(symbol: str, interval: str, row: list[Any], *, now_ms: int) 
     )
 
 
+def parse_ws_kline_item(symbol: str, interval: str, item: dict[str, Any]) -> Candle:
+    """Parse one Bybit public kline WebSocket row (`confirm` marks a closed bar)."""
+    start_ms = int(item["start"])
+    row_interval = str(item.get("interval") or interval)
+    return Candle(
+        symbol=symbol,
+        interval=row_interval,
+        start_time=datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        open=to_decimal(item["open"]),
+        high=to_decimal(item["high"]),
+        low=to_decimal(item["low"]),
+        close=to_decimal(item["close"]),
+        volume=to_decimal(item.get("volume") or "0"),
+        turnover=to_decimal(item.get("turnover") or "0"),
+        confirmed=bool(item.get("confirm")),
+    )
+
+
+def parse_ws_kline_message(payload: dict[str, Any]) -> list[Candle]:
+    topic = str(payload.get("topic") or "")
+    parts = topic.split(".")
+    interval = parts[1] if len(parts) >= 3 else ""
+    symbol = parts[2] if len(parts) >= 3 else ""
+    candles: list[Candle] = []
+    for item in payload.get("data") or []:
+        item_symbol = str(item.get("symbol") or symbol)
+        candles.append(parse_ws_kline_item(item_symbol, interval, item))
+    return candles
+
+
 def parse_kline_payload(
     payload: dict[str, Any],
     *,

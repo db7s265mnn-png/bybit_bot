@@ -21,8 +21,8 @@ class KillSwitchState:
 class KillSwitch:
     """Emergency halt. New entries/orders must check this before sending.
 
-    Position handling is deferred to the execution engine (later phases):
-    the policy is recorded here so the engine can flatten or hold.
+    Paper trading honors the policy: hold keeps virtual positions (SL/TP still apply);
+    flatten closes them at the next simulated market price. Live exchange flatten is Phase 8.
     """
 
     def __init__(self, policy: KillSwitchPolicy = KillSwitchPolicy.HOLD) -> None:

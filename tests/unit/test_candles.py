@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trading_bot.market.candles import parse_kline_payload, parse_kline_row, to_bybit_interval
+from trading_bot.market.candles import parse_kline_payload, parse_kline_row, parse_ws_kline_message, to_bybit_interval
 
 
 def test_timeframe_maps_to_bybit_interval() -> None:
@@ -34,3 +34,26 @@ def test_bybit_newest_first_is_reversed_and_unclosed_dropped() -> None:
     confirmed_only = parse_kline_payload(payload, interval="15", now_ms=mid_second, include_unclosed=False)
     assert len(confirmed_only) == 1
     assert confirmed_only[0].start_ms == start
+
+
+def test_ws_kline_uses_confirm_flag() -> None:
+    payload = {
+        "topic": "kline.15.BTCUSDT",
+        "data": [
+            {
+                "start": 1704067200000,
+                "interval": "15",
+                "open": "100",
+                "high": "101",
+                "low": "99",
+                "close": "100.5",
+                "volume": "1",
+                "turnover": "1",
+                "confirm": False,
+            }
+        ],
+    }
+    open_bar = parse_ws_kline_message(payload)[0]
+    assert open_bar.confirmed is False
+    payload["data"][0]["confirm"] = True
+    assert parse_ws_kline_message(payload)[0].confirmed is True

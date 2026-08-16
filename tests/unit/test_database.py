@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from trading_bot.database.database import Database, OrderRecord, TradeRecord
+from trading_bot.database.database import Database, OrderRecord, PaperAccount, TradeRecord
 from trading_bot.market.candles import Candle
 
 
@@ -63,4 +63,23 @@ def test_sqlite_roundtrip_candles_trades_orders_events(tmp_path) -> None:
     event = db.record_event("test", "hello", level="INFO")
     assert event.event_id
     assert db.list_events()[0].message == "hello"
+
+    account = PaperAccount(
+        session_id="paper-test",
+        equity=Decimal("10000"),
+        initial_balance=Decimal("10000"),
+        last_candles={"BTCUSDT": 1},
+        consecutive_losses=0,
+        day_key="2024-01-01",
+        day_start_equity=Decimal("10000"),
+        daily_realized=Decimal("0"),
+        pending_json="",
+        strategy="ema_crossover",
+        updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    db.save_paper_account(account)
+    loaded = db.load_paper_account("paper-test")
+    assert loaded is not None
+    assert loaded.equity == Decimal("10000")
+    assert loaded.last_candles["BTCUSDT"] == 1
     db.close()

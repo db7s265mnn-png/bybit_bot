@@ -1,6 +1,6 @@
 # Архитектура торгового бота Bybit V5
 
-Статус: **Phases 1–5** (подключение, SQLite, стратегия, риск, backtest). Paper/testnet/mainnet execution — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
+Статус: **Phases 1–6** (подключение, SQLite, стратегия, риск, backtest, paper). Testnet/mainnet execution — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
 
 ## Цель
 
@@ -11,7 +11,7 @@
 | `system.mode` | Данные | Ордера | Условие |
 |---|---|---|---|
 | `backtest` | Исторические свечи | Симуляция | Phase 4 **готово** |
-| `paper` | Realtime Bybit | Симуляция, без API-ордеров | Phase 6 |
+| `paper` | Realtime Bybit | Симуляция, без API-ордеров | Phase 6 **готово** |
 | `testnet` | Bybit Testnet API | Реальные testnet-ордера | Phase 8 |
 | `mainnet` | Bybit Mainnet API | Реальные ордера только при `LIVE_TRADING_CONFIRM=true` | Phase 10 |
 
@@ -43,7 +43,7 @@ Look-ahead (backtest): сигнал по закрытию свечи N испо�
 
 ```
 trading_bot/
-  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal
+  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal, paper
   config/                 YAML + overlay из .env
   core/                   ошибки, retry, kill switch, redaction, id событий
   exchange/               REST (pybit), rate limit, WebSocket, спецификация инструмента
@@ -52,9 +52,9 @@ trading_bot/
   monitoring/             structlog + redaction секретов
   strategy/               интерфейс + ema_crossover (регистрируется декоратором)
   risk/                   sizing от стопа, дневной лимит, portfolio cap
-  execution/              slippage/spread/fees helpers
+  execution/              slippage/spread/fees + SimulatedBroker (paper/backtest)
   backtest/               event-driven engine, метрики, OOS, walk-forward
-  paper/                  Phase 6
+  paper/                  Phase 6: live/replay paper loop, SQLite restore
   database/               SQLite, схема готова к PostgreSQL
 config/config.yaml
 config/.env.example
@@ -76,6 +76,7 @@ tests/integration
 | `risk` | Лимиты и sizing от стопа | Не обходит Kill Switch |
 | `execution` | Исполнение + комиссии/slippage | Не считает сигнал |
 | `backtest` | Event-driven симуляция | Не подглядывает в будущее |
+| `paper` | Realtime/replay, виртуальные ордера в SQLite | Не вызывает API ордеров |
 | `monitoring` | Логи/алерты | Не пишет secret/token в лог |
 
 ## Библиотеки (Phase 1)
@@ -97,7 +98,7 @@ tests/integration
 
 ## Kill Switch
 
-При активации: новые позиции/ордера запрещены; политика по открытым позициям задаётся `kill_switch.position_policy` (`hold` по умолчанию, `flatten` — в фазе исполнения). Состояние пишется в лог с `event_id`.
+При активации: новые позиции/ордера запрещены; политика по открытым позициям задаётся `kill_switch.position_policy` (`hold` по умолчанию, `flatten` — закрытие виртуальных paper-позиций по следующей цене; live flatten — Phase 8). Состояние пишется в лог с `event_id`.
 
 ## Противоречия ТЗ (решения)
 
@@ -136,7 +137,7 @@ tests/integration
 3. **Phase 3:** интерфейс стратегии + EMA baseline.
 4. **Phase 4:** event-driven backtest, метрики, OOS, walk-forward.
 5. **Phase 5:** risk manager / position sizing.
-6. Phase 6: paper engine.
+6. **Phase 6:** paper engine (live kline / CSV replay, simulated fills, restore-on-start). **готово**
 7. Phase 7: order manager, idempotency, SL/TP на бирже.
 8. Phase 8: testnet live loop + restore-on-start.
 9. Phase 9: Telegram.

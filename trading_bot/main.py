@@ -30,6 +30,9 @@ from trading_bot.market.csv_io import candles_from_csv
 from trading_bot.market.market_data import MarketDataService
 from trading_bot.market.store import CandleStore
 from trading_bot.monitoring.logger import configure_logging, get_logger
+from trading_bot.paper.engine import PAPER_DISCLAIMER, PaperEngine
+from trading_bot.paper.runner import run_live, run_replay
+from trading_bot.risk.risk_manager import RiskManager
 from trading_bot.strategy import create_strategy
 
 MAINNET_BANNER = """
@@ -97,6 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
     signal.add_argument("--limit", type=int, default=200)
     signal.add_argument("--csv", default=None)
     signal.add_argument("--from-db", action="store_true")
+    paper = sub.add_parser("paper", help="Paper trade: live klines or CSV replay, never sends orders")
+    paper.add_argument("--symbol", default=None)
+    paper.add_argument("--seconds", type=float, default=None, help="Stop live paper after N seconds (default: until interrupt)")
+    paper.add_argument("--csv", default=None, help="Replay OHLCV through the paper engine (no Bybit, no real orders)")
+    paper.add_argument("--from-db", action="store_true", help="Replay stored SQLite candles through the paper engine")
+    paper.add_argument("--session", default="paper", help="Paper session id for SQLite restore")
+    paper.add_argument("--warmup", type=int, default=200, help="Confirmed candles to seed EMA before live paper")
     return parser
 
 
@@ -420,6 +430,78 @@ def cmd_signal(
     return 0
 
 
+def cmd_paper(
+    config: AppConfig,
+    *,
+    symbols: list[str],
+    seconds: float | None,
+    csv_path: str | None,
+    from_db: bool,
+    session_id: str,
+    warmup: int,
+    client: BybitRESTClient | None,
+    kill_switch: KillSwitch,
+) -> int:
+    print(PAPER_DISCLAIMER, file=sys.stderr)
+    db = _open_db(config)
+    engine: PaperEngine | None = None
+    try:
+        instruments = {}
+        for sym in symbols:
+            instrument, _source = resolve_instrument(config, sym, db)
+            if client is not None:
+                try:
+                    instrument = client.get_instrument(sym)
+                    db.save_instrument(instrument)
+                except (TradingBotError, GeoRestrictedError):
+                    pass
+            instruments[sym] = instrument
+        strategy = create_strategy(config.strategy.name, params=config.strategy.params)
+        risk = RiskManager(config, kill_switch)
+        engine = PaperEngine(
+            config,
+            strategy,
+            risk,
+            instruments,
+            database=db,
+            kill_switch=kill_switch,
+            session_id=session_id,
+        )
+        engine.restore()
+        if csv_path:
+            candles = candles_from_csv(csv_path, symbols[0], config.trading.timeframe)
+            snapshot = run_replay(engine, candles)
+        elif from_db:
+            store = CandleStore(db)
+            candles = []
+            for sym in symbols:
+                candles.extend(store.load(sym, config.trading.timeframe))
+            if not candles:
+                raise TradingBotError("SQLite has no candles; run sync-candles or pass --csv")
+            candles.sort(key=lambda item: (item.start_ms, item.symbol))
+            snapshot = run_replay(engine, candles)
+        else:
+            if client is None:
+                raise TradingBotError("live paper needs Bybit connectivity, or pass --csv / --from-db")
+            snapshot = run_live(
+                config,
+                engine,
+                market=MarketDataService(client),
+                symbols=symbols,
+                seconds=seconds,
+                warmup=warmup,
+            )
+        snapshot["real_orders"] = False
+        _print(snapshot)
+        return 0
+    except KeyboardInterrupt:
+        if engine is not None:
+            _print(engine.snapshot(mark=engine.last_mark_candle()))
+        return 0
+    finally:
+        db.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -442,7 +524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "stream",
         "sync-candles",
     }
-    if args.command in {"backtest", "signal"}:
+    if args.command in {"backtest", "signal", "paper"}:
         needs_client = not getattr(args, "csv", None) and not getattr(args, "from_db", False)
     client = BybitRESTClient(config) if needs_client else None
     market = MarketDataService(client) if client is not None else None
@@ -475,9 +557,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             client=client,
             from_db=getattr(args, "from_db", False),
         ),
+        "paper": lambda: cmd_paper(
+            config,
+            symbols=[symbol] if getattr(args, "symbol", None) else list(config.exchange.symbols),
+            seconds=args.seconds,
+            csv_path=args.csv,
+            from_db=args.from_db,
+            session_id=args.session,
+            warmup=args.warmup,
+            client=client,
+            kill_switch=kill_switch,
+        ),
     }
     try:
         return commands[args.command]()
+    except KeyboardInterrupt:
+        log.warning("interrupted")
+        return 0
+    except GeoRestrictedError as exc:
+        log.error(
+            "command_failed",
+            command=args.command,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            hint="Bybit blocked this IP. Replay with --csv/--from-db or run from an allowed region.",
+        )
+        return 1
     except TradingBotError as exc:
         log.error(
             "command_failed",

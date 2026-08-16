@@ -47,6 +47,27 @@ class RiskManager:
     def daily_realized(self) -> Decimal:
         return self._daily_realized
 
+    @property
+    def day_key(self) -> str:
+        return self._day_key
+
+    @property
+    def day_start_equity(self) -> Decimal:
+        return self._day_start_equity
+
+    def restore_state(
+        self,
+        *,
+        day_key: str = "",
+        day_start_equity: Decimal = Decimal("0"),
+        daily_realized: Decimal = Decimal("0"),
+        consecutive_losses: int = 0,
+    ) -> None:
+        self._day_key = day_key
+        self._day_start_equity = day_start_equity
+        self._daily_realized = daily_realized
+        self._consecutive_losses = consecutive_losses
+
     def note_session_equity(self, equity: Decimal, at: datetime) -> None:
         day = at.astimezone(timezone.utc).date().isoformat()
         if day != self._day_key:
