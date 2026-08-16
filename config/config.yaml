@@ -1,0 +1,80 @@
+# All tunables live here. Secrets live in .env / environment variables, never in this file.
+# Historical backtest results do not guarantee future performance.
+
+exchange:
+  testnet: true
+  category: linear
+  account_type: UNIFIED
+  settle_coin: USDT
+  # Global host. Alternate documented domain: bytick
+  domain: bybit
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+  recv_window_ms: 5000
+  rest_timeout_sec: 10
+  # Default futures UID limit is 10 req/s. Stay below it; headers still override.
+  max_requests_per_second: 8
+  max_retries: 3
+  retry_base_delay_sec: 0.5
+  retry_max_delay_sec: 8.0
+
+trading:
+  timeframe: 15m
+  leverage: 1
+
+risk:
+  risk_per_trade: 0.005
+  max_daily_loss: 0.02
+  max_open_positions: 3
+  max_position_size: 0.25
+  max_portfolio_risk: 0.015
+  max_consecutive_losses: 5
+  max_leverage: 5
+
+execution:
+  slippage: 0.001
+
+fees:
+  # Used when the account fee-rate endpoint is unavailable (backtest / paper fallback).
+  # Live/testnet prefer GET /v5/account/fee-rate.
+  taker: 0.00055
+  maker: 0.0002
+
+strategy:
+  name: ema_crossover
+  params:
+    fast_ema: 20
+    slow_ema: 50
+    atr_period: 14
+    atr_sl_multiplier: 2.0
+    take_profit:
+      type: risk_reward
+      risk_reward: 2.0
+
+kill_switch:
+  # hold: keep existing positions, cancel new entries (default, safer if bot dies mid-policy).
+  # flatten: close all positions at market after kill (implemented in later phases).
+  position_policy: hold
+
+websocket:
+  ping_interval_sec: 20
+  ping_timeout_sec: 10
+  stale_after_sec: 40
+  max_reconnect_attempts: 20
+  reconnect_base_delay_sec: 1.0
+  reconnect_max_delay_sec: 60.0
+
+system:
+  mode: paper
+  log_level: INFO
+  live_trading_confirm: false
+
+database:
+  url: sqlite:///data/trading_bot.db
+
+telegram:
+  enabled: false
+  allowed_user_ids: []
+  heartbeat_interval_sec: 60
+  stale_market_alert_sec: 30

@@ -1,0 +1,10 @@
+pybit>=5.17.0
+pydantic>=2.7
+pydantic-settings>=2.3
+PyYAML>=6.0
+python-dotenv>=1.0
+structlog>=24.4
+tenacity>=8.5
+websocket-client>=1.8
+pytest>=8.2
+pytest-timeout>=2.3
