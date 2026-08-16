@@ -9,11 +9,14 @@ from decimal import Decimal
 from typing import Any
 
 from trading_bot.account.service import AccountService
+from trading_bot.backtest.engine import DISCLAIMER, resolve_instrument
+from trading_bot.backtest.runner import run_backtest_suite
 from trading_bot.config.loader import load_config
 from trading_bot.config.models import AppConfig, TradingMode
-from trading_bot.core.exceptions import TradingBotError
+from trading_bot.core.exceptions import GeoRestrictedError, TradingBotError
 from trading_bot.core.kill_switch import KillSwitch
 from trading_bot.core.redaction import redact_obj
+from trading_bot.database.database import Database
 from trading_bot.exchange.bybit_client import BybitRESTClient
 from trading_bot.exchange.websocket import (
     BybitWebSocket,
@@ -23,8 +26,11 @@ from trading_bot.exchange.websocket import (
     ticker_topic,
 )
 from trading_bot.market.candles import to_bybit_interval
+from trading_bot.market.csv_io import candles_from_csv
 from trading_bot.market.market_data import MarketDataService
+from trading_bot.market.store import CandleStore
 from trading_bot.monitoring.logger import configure_logging, get_logger
+from trading_bot.strategy import create_strategy
 
 MAINNET_BANNER = """
 WARNING:
@@ -58,7 +64,7 @@ def _warn_mainnet(config: AppConfig) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Modular Bybit V5 trading bot (Phase 1: connectivity)",
+        description="Modular Bybit V5 trading bot",
     )
     parser.add_argument("--config", help="Path to config.yaml")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -77,6 +83,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("account", help="Fetch wallet, positions, orders, API key permissions")
     stream = sub.add_parser("stream", help="Subscribe to public WebSocket for a few seconds")
     stream.add_argument("--seconds", type=float, default=12.0)
+    sync = sub.add_parser("sync-candles", help="Fetch candles from Bybit and store them in SQLite")
+    sync.add_argument("--symbol", default=None)
+    sync.add_argument("--limit", type=int, default=500)
+    backtest = sub.add_parser("backtest", help="Run event-driven backtest (fees/slippage/funding included)")
+    backtest.add_argument("--symbol", default=None)
+    backtest.add_argument("--limit", type=int, default=500)
+    backtest.add_argument("--csv", default=None, help="OHLCV CSV (start_ms,open,high,low,close,volume)")
+    backtest.add_argument("--from-db", action="store_true")
+    backtest.add_argument("--persist", action="store_true", help="Write full-run trades into SQLite")
+    signal = sub.add_parser("signal", help="Compute the latest strategy signal from stored/fetched candles")
+    signal.add_argument("--symbol", default=None)
+    signal.add_argument("--limit", type=int, default=200)
+    signal.add_argument("--csv", default=None)
+    signal.add_argument("--from-db", action="store_true")
     return parser
 
 
@@ -272,6 +292,134 @@ def cmd_stream(config: AppConfig, seconds: float) -> int:
         ws.stop()
 
 
+def _open_db(config: AppConfig) -> Database:
+    return Database(config.database.url)
+
+
+def _load_candles(
+    config: AppConfig,
+    symbol: str,
+    *,
+    limit: int,
+    csv_path: str | None,
+    from_db: bool,
+    client: BybitRESTClient | None,
+) -> list:
+    if csv_path:
+        return candles_from_csv(csv_path, symbol, config.trading.timeframe)
+    db = _open_db(config)
+    try:
+        if from_db:
+            stored = CandleStore(db).load(symbol, config.trading.timeframe)
+            if not stored:
+                raise TradingBotError("SQLite has no candles; run sync-candles or pass --csv")
+            return stored[-limit:] if limit else stored
+        if client is None:
+            raise TradingBotError("Bybit client is required unless --csv or --from-db is set")
+        market = MarketDataService(client)
+        store = CandleStore(db, market)
+        try:
+            instrument = client.get_instrument(symbol)
+        except TradingBotError:
+            instrument = None
+        return store.sync(symbol, config.trading.timeframe, limit=limit, instrument=instrument)
+    finally:
+        db.close()
+
+
+def cmd_sync_candles(config: AppConfig, client: BybitRESTClient, symbol: str, limit: int) -> int:
+    db = _open_db(config)
+    try:
+        store = CandleStore(db, MarketDataService(client))
+        instrument = client.get_instrument(symbol)
+        candles = store.sync(symbol, config.trading.timeframe, limit=limit, instrument=instrument)
+        _print(
+            {
+                "symbol": symbol,
+                "stored": len(candles),
+                "first": None if not candles else candles[0].start_time.isoformat(),
+                "last": None if not candles else candles[-1].start_time.isoformat(),
+            }
+        )
+        return 0
+    finally:
+        db.close()
+
+
+def cmd_backtest(
+    config: AppConfig,
+    symbol: str,
+    *,
+    limit: int,
+    csv_path: str | None,
+    from_db: bool,
+    persist: bool,
+    client: BybitRESTClient | None,
+) -> int:
+    print(DISCLAIMER, file=sys.stderr)
+    candles = _load_candles(config, symbol, limit=limit, csv_path=csv_path, from_db=from_db, client=client)
+    db = _open_db(config) if persist or from_db else None
+    try:
+        instrument, source = resolve_instrument(config, symbol, db)
+        if client is not None:
+            try:
+                instrument = client.get_instrument(symbol)
+                source = "api"
+                if db is not None:
+                    db.save_instrument(instrument)
+            except (TradingBotError, GeoRestrictedError):
+                pass
+        report = run_backtest_suite(
+            config,
+            candles,
+            instrument=instrument,
+            database=db,
+            persist_full=persist,
+        )
+        report["instrument_source"] = source
+        _print(report)
+        return 0
+    finally:
+        if db is not None:
+            db.close()
+
+
+def cmd_signal(
+    config: AppConfig,
+    symbol: str,
+    *,
+    limit: int,
+    csv_path: str | None,
+    client: BybitRESTClient | None,
+    from_db: bool = False,
+) -> int:
+    candles = _load_candles(
+        config,
+        symbol,
+        limit=limit,
+        csv_path=csv_path,
+        from_db=from_db or (csv_path is None and client is None),
+        client=client,
+    )
+    strategy = create_strategy(config.strategy.name, params=config.strategy.params)
+    if len(candles) < strategy.required_history():
+        raise TradingBotError(f"need at least {strategy.required_history()} candles, got {len(candles)}")
+    signal = strategy.generate_signal(candles)
+    _print(
+        {
+            "type": signal.type.value,
+            "symbol": signal.symbol,
+            "timestamp": signal.timestamp.isoformat(),
+            "confidence": signal.confidence,
+            "stop_loss": signal.stop_loss,
+            "take_profit": signal.take_profit,
+            "recommended_size": signal.recommended_size,
+            "extra": signal.extra,
+        }
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -283,9 +431,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     kill_switch = KillSwitch(config.kill_switch.position_policy)
     log.debug("kill_switch_ready", active=kill_switch.is_active())
 
-    client = BybitRESTClient(config)
-    market = MarketDataService(client)
     symbol = getattr(args, "symbol", None) or config.exchange.symbols[0]
+    needs_client = args.command in {
+        "ping",
+        "instruments",
+        "klines",
+        "ticker",
+        "orderbook",
+        "account",
+        "stream",
+        "sync-candles",
+    }
+    if args.command in {"backtest", "signal"}:
+        needs_client = not getattr(args, "csv", None) and not getattr(args, "from_db", False)
+    client = BybitRESTClient(config) if needs_client else None
+    market = MarketDataService(client) if client is not None else None
 
     commands = {
         "ping": lambda: cmd_ping(client),
@@ -297,6 +457,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "orderbook": lambda: cmd_orderbook(market, symbol, args.limit),
         "account": lambda: cmd_account(client),
         "stream": lambda: cmd_stream(config, args.seconds),
+        "sync-candles": lambda: cmd_sync_candles(config, client, symbol, args.limit),
+        "backtest": lambda: cmd_backtest(
+            config,
+            symbol,
+            limit=args.limit,
+            csv_path=args.csv,
+            from_db=args.from_db,
+            persist=args.persist,
+            client=client,
+        ),
+        "signal": lambda: cmd_signal(
+            config,
+            symbol,
+            limit=args.limit,
+            csv_path=args.csv,
+            client=client,
+            from_db=getattr(args, "from_db", False),
+        ),
     }
     try:
         return commands[args.command]()

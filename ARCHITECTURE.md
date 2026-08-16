@@ -1,6 +1,6 @@
 # Архитектура торгового бота Bybit V5
 
-Статус: **Phase 1 — подключение к бирже**. Историческая доходность любой будущей стратегии не гарантирует прибыль.
+Статус: **Phases 1–5** (подключение, SQLite, стратегия, риск, backtest). Paper/testnet/mainnet execution — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
 
 ## Цель
 
@@ -10,7 +10,7 @@
 
 | `system.mode` | Данные | Ордера | Условие |
 |---|---|---|---|
-| `backtest` | Исторические свечи | Симуляция | Phase 4 |
+| `backtest` | Исторические свечи | Симуляция | Phase 4 **готово** |
 | `paper` | Realtime Bybit | Симуляция, без API-ордеров | Phase 6 |
 | `testnet` | Bybit Testnet API | Реальные testnet-ордера | Phase 8 |
 | `mainnet` | Bybit Mainnet API | Реальные ордера только при `LIVE_TRADING_CONFIRM=true` | Phase 10 |
@@ -43,19 +43,19 @@ Look-ahead (backtest): сигнал по закрытию свечи N испо�
 
 ```
 trading_bot/
-  main.py                 CLI Phase 1: ping, instruments, klines, ticker, orderbook, account, stream
+  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal
   config/                 YAML + overlay из .env
   core/                   ошибки, retry, kill switch, redaction, id событий
   exchange/               REST (pybit), rate limit, WebSocket, спецификация инструмента
   market/                 свечи, стакан, ticker
   account/                wallet / positions / orders / API key (source of truth = биржа)
   monitoring/             structlog + redaction секретов
-  strategy/               Phase 3
-  risk/                   Phase 5
-  execution/              Phases 6–8
-  backtest/               Phase 4
+  strategy/               интерфейс + ema_crossover (регистрируется декоратором)
+  risk/                   sizing от стопа, дневной лимит, portfolio cap
+  execution/              slippage/spread/fees helpers
+  backtest/               event-driven engine, метрики, OOS, walk-forward
   paper/                  Phase 6
-  database/               Phase 2+
+  database/               SQLite, схема готова к PostgreSQL
 config/config.yaml
 config/.env.example
 tests/unit
@@ -131,11 +131,11 @@ tests/integration
 
 ## Порядок фаз
 
-1. **Phase 1 (эта ветка):** REST, public WS, market data, account snapshot, конфиг, логи, kill switch-состояние, тесты.
-2. Phase 2: хранение свечей/сделок (SQLite).
-3. Phase 3: интерфейс стратегии + EMA baseline.
-4. Phase 4: event-driven backtest, метрики, OOS, walk-forward.
-5. Phase 5: risk manager / position sizing.
+1. **Phase 1:** REST, public WS, market data, account snapshot, конфиг, логи, kill switch-состояние, тесты.
+2. **Phase 2:** SQLite (candles, instruments, trades, orders, events).
+3. **Phase 3:** интерфейс стратегии + EMA baseline.
+4. **Phase 4:** event-driven backtest, метрики, OOS, walk-forward.
+5. **Phase 5:** risk manager / position sizing.
 6. Phase 6: paper engine.
 7. Phase 7: order manager, idempotency, SL/TP на бирже.
 8. Phase 8: testnet live loop + restore-on-start.

@@ -34,12 +34,15 @@ risk:
 
 execution:
   slippage: 0.001
+  spread: 0.0
 
 fees:
   # Used when the account fee-rate endpoint is unavailable (backtest / paper fallback).
   # Live/testnet prefer GET /v5/account/fee-rate.
   taker: 0.00055
   maker: 0.0002
+  assumed_funding_rate: 0.0001
+  funding_interval_hours: 8
 
 strategy:
   name: ema_crossover
@@ -72,6 +75,24 @@ system:
 
 database:
   url: sqlite:///data/trading_bot.db
+
+backtest:
+  initial_balance: 10000
+  split:
+    development: 0.6
+    validation: 0.2
+    out_of_sample: 0.2
+  walk_forward:
+    enabled: true
+    train_fraction: 0.4
+    test_fraction: 0.2
+    step_fraction: 0.2
+  fallback_instrument:
+    tick_size: 0.1
+    qty_step: 0.001
+    min_order_qty: 0.001
+    max_order_qty: 1000
+    min_notional: 5
 
 telegram:
   enabled: false

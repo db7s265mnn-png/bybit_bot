@@ -45,7 +45,7 @@ def configure_logging(
     numeric = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=sys.stderr,
         level=numeric,
         force=True,
     )

@@ -4,7 +4,7 @@
 
 **Исторические результаты (backtest / paper) не гарантируют будущую прибыль.** Базовая EMA-стратегия нужна только для проверки контура и не считается рабочей торговой системой.
 
-Сейчас реализована **Phase 1**: подключение к API, рыночные данные, информация об аккаунте, WebSocket с reconnect.
+Сейчас реализованы **Phases 1–5**: подключение к Bybit V5, SQLite, интерфейс стратегии (EMA 20/50 + ATR SL), risk manager и event-driven backtest (OOS + walk-forward).
 
 Подробности архитектуры, библиотек и ограничений Bybit: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -19,7 +19,7 @@
 - Kill Switch как состояние (исполнение политики — в следующих фазах).
 - Режимы `backtest | paper | testnet | mainnet`; на mainnet — баннер и флаг `LIVE_TRADING_CONFIRM`.
 
-Ещё не реализовано (следующие фазы): стратегия, backtest, paper engine, боевые ордера, Telegram, Docker, SQLite-журнал сделок.
+Ещё не реализовано: paper engine, боевые ордера / testnet loop, Telegram, Docker.
 
 ## Требования
 
@@ -105,7 +105,33 @@ python -m trading_bot klines --limit 10
 python -m trading_bot ticker
 python -m trading_bot orderbook
 python -m trading_bot stream --seconds 15
+python -m trading_bot sync-candles --limit 500
 ```
+
+CSV для backtest (без API): колонки `start_ms,open,high,low,close,volume`.
+
+## Backtest
+
+Каждый отчёт содержит предупреждение: историческая доходность не гарантирует будущую. EMA-стратегия — проверка инфраструктуры, не торговый совет.
+
+```bash
+# из CSV, без Bybit:
+python -m trading_bot backtest --csv path/to/ohlcv.csv --symbol BTCUSDT
+
+# из SQLite после sync-candles:
+python -m trading_bot backtest --from-db --symbol BTCUSDT
+
+# с Bybit (если IP не geo-block):
+python -m trading_bot sync-candles --limit 1500
+python -m trading_bot backtest --limit 1500 --persist
+python -m trading_bot signal --from-db --limit 200
+```
+
+В отчёте отдельно: Gross PnL, trading fees, funding, slippage, Net PnL. Сплит 60/20/20 (development / validation / out-of-sample) и walk-forward. Сигнал считается на close свечи N, сделка — по open N+1 (без look-ahead).
+
+Размер позиции: `risk_amount / (расстояние до SL + комиссии + slippage)`, не фиксированный % депозита.
+
+## Запуск Phase 1 (рынок / аккаунт)
 
 Приватные:
 

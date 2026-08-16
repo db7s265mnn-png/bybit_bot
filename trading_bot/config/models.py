@@ -106,11 +106,15 @@ class RiskConfig(BaseModel):
 
 class ExecutionConfig(BaseModel):
     slippage: Decimal = Decimal("0.001")
+    spread: Decimal = Decimal("0")
 
 
 class FeesConfig(BaseModel):
     taker: Decimal = Decimal("0.00055")
     maker: Decimal = Decimal("0.0002")
+    # Per funding interval, used in backtest when historical funding is not loaded.
+    assumed_funding_rate: Decimal = Decimal("0")
+    funding_interval_hours: int = Field(default=8, ge=1, le=24)
 
 
 class TakeProfitConfig(BaseModel):
@@ -163,6 +167,43 @@ class SystemConfig(BaseModel):
         return level
 
 
+class SplitConfig(BaseModel):
+    development: Decimal = Decimal("0.6")
+    validation: Decimal = Decimal("0.2")
+    out_of_sample: Decimal = Decimal("0.2")
+
+    @model_validator(mode="after")
+    def fractions_sum_to_one(self) -> SplitConfig:
+        total = self.development + self.validation + self.out_of_sample
+        if abs(total - Decimal("1")) > Decimal("0.001"):
+            raise ValueError("backtest.split fractions must sum to 1")
+        return self
+
+
+class WalkForwardConfig(BaseModel):
+    enabled: bool = True
+    train_fraction: Decimal = Decimal("0.4")
+    test_fraction: Decimal = Decimal("0.2")
+    step_fraction: Decimal = Decimal("0.2")
+
+
+class BacktestFallbackInstrument(BaseModel):
+    """Used only when instruments-info is not in the DB and the API is unreachable."""
+
+    tick_size: Decimal = Decimal("0.1")
+    qty_step: Decimal = Decimal("0.001")
+    min_order_qty: Decimal = Decimal("0.001")
+    max_order_qty: Decimal = Decimal("1000")
+    min_notional: Decimal = Decimal("5")
+
+
+class BacktestConfig(BaseModel):
+    initial_balance: Decimal = Decimal("10000")
+    split: SplitConfig = Field(default_factory=SplitConfig)
+    walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
+    fallback_instrument: BacktestFallbackInstrument = Field(default_factory=BacktestFallbackInstrument)
+
+
 class DatabaseConfig(BaseModel):
     url: str = "sqlite:///data/trading_bot.db"
 
@@ -213,6 +254,7 @@ class AppConfig(BaseModel):
     system: SystemConfig = Field(default_factory=SystemConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     secrets: Secrets = Field(default_factory=Secrets)
 
     @model_validator(mode="after")
