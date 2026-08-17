@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+config/.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime
+logs/*.log
+logs/*.jsonl
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
