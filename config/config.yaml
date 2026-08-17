@@ -56,8 +56,8 @@ strategy:
       risk_reward: 2.0
 
 kill_switch:
-  # hold: keep existing positions, cancel new entries (default, safer if bot dies mid-policy).
-  # flatten: close all positions at market after kill (implemented in later phases).
+  # hold: keep existing positions, block new entries (default, safer if the bot dies mid-policy).
+  # flatten: close positions at market (paper: next bar; testnet live: OrderManager reduce-only).
   position_policy: hold
 
 websocket:

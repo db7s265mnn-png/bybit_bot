@@ -4,7 +4,7 @@
 
 **Исторические результаты (backtest / paper) не гарантируют будущую прибыль.** Базовая EMA-стратегия нужна только для проверки контура и не считается рабочей торговой системой.
 
-Сейчас реализованы **Phases 1–7**: подключение к Bybit V5, SQLite, стратегия, risk, backtest, paper и Order Manager (идемпотентность, подтверждение fill, SL на бирже). Live-цикл testnet ещё не включён.
+Сейчас реализованы **Phases 1–8**: подключение к Bybit V5, SQLite, стратегия, risk, backtest, paper, Order Manager и **testnet live-цикл** (биржа — источник истины при restore). Mainnet live и Telegram ещё впереди.
 
 Подробности архитектуры, библиотек и ограничений Bybit: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -16,10 +16,10 @@
 - Свечи с защитой от look-ahead: незакрытый бар по умолчанию отбрасывается.
 - Снимок аккаунта: баланс, позиции, ордера, fee rate, проверка API-ключа (запрет Withdraw).
 - Конфиг в YAML, секреты в `.env`. Secret не пишется в лог.
-- Kill Switch как состояние (исполнение политики — в следующих фазах).
+- Kill Switch: новые входы блокируются; `flatten` закрывает позиции (paper — на следующем баре, testnet — reduce-only через OrderManager).
 - Режимы `backtest | paper | testnet | mainnet`; на mainnet — баннер и флаг `LIVE_TRADING_CONFIRM`.
 
-Ещё не реализовано: testnet live loop, Telegram, Docker.
+Ещё не реализовано: Telegram, Docker, mainnet live (Phase 10).
 
 ## Требования
 
@@ -163,7 +163,24 @@ python -m trading_bot paper --seconds 60 --symbol BTCUSDT
 python -m trading_bot order-status --link-id <orderLinkId> --symbol BTCUSDT
 ```
 
-Live-цикл стратегии на testnet — Phase 8.
+## Testnet live (Phase 8)
+
+Боевой цикл на **Bybit Testnet**: те же strategy + risk, ордера только через `OrderManager`. Команда `live` требует `MODE=testnet` (paper/backtest/mainnet отвергаются; mainnet — Phase 10).
+
+- Источник истины при старте — **биржа** (`account.snapshot()`), не SQLite. SQLite хранит только курсор свечей, overlay риска и pending-сигнал.
+- Позиция без SL на restore: CRITICAL и reduce-only flatten.
+- Сигнал на закрытии свечи N, заявка на **следующей подтверждённой** kline. Warmup/REST catch-up ордера не шлют.
+- Пока public kline WS не CONNECTED, новые входы на паузе. Обрыв private WS — предупреждение, цикл продолжается (fill подтверждается REST).
+- Kill switch блокирует входы; политика `flatten` вызывает `OrderManager.flatten_symbol`.
+- `--dry-run` логирует intents без `place`.
+
+```bash
+# .env: MODE=testnet, BYBIT_TESTNET=true, ключи testnet без Withdraw
+python -m trading_bot live --seconds 60 --symbol BTCUSDT --session testnet
+python -m trading_bot live --dry-run --seconds 30 --symbol BTCUSDT
+```
+
+Каждый отчёт содержит предупреждение: testnet-сделки не являются заявлением, что стратегия прибыльна на mainnet.
 
 ## Запуск Phase 1 (рынок / аккаунт)
 
@@ -188,7 +205,7 @@ REAL MONEY TRADING ENABLED
 |---|---|---|
 | `MODE=backtest` | `python -m trading_bot backtest` | — |
 | `MODE=paper` | `python -m trading_bot paper` | — |
-| `MODE=testnet` | REST/WS, `account`, OrderManager | Phase 8: боевой цикл с ордерами |
+| `MODE=testnet` | `python -m trading_bot live` | — |
 | `MODE=mainnet` | баннер + confirm | Phase 10: малый live |
 
 ## Telegram
@@ -209,7 +226,7 @@ TELEGRAM_ALLOWED_USER_IDS=
 
 ## Emergency shutdown
 
-Сейчас: остановить процесс (`Ctrl+C` / `kill`). Kill Switch блокирует новые входы. `OrderManager.flatten_symbol` закрывает позицию reduce-only market (для live-цикла Phase 8).
+Сейчас: остановить процесс (`Ctrl+C` / `kill`). Kill Switch блокирует новые входы. На testnet live политика `flatten` закрывает позицию через `OrderManager.flatten_symbol` (reduce-only market).
 
 1. Telegram `/kill` (Phase 9) или локальный kill switch.
 2. Новые ордера не отправляются.

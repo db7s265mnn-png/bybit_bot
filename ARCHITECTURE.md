@@ -1,6 +1,6 @@
 # Архитектура торгового бота Bybit V5
 
-Статус: **Phases 1–7** (подключение, SQLite, стратегия, риск, backtest, paper, order manager). Testnet/mainnet live-цикл — следующие фазы. Историческая доходность любой стратегии не гарантирует прибыль.
+Статус: **Phases 1–8** (подключение, SQLite, стратегия, риск, backtest, paper, order manager, testnet live). Mainnet live — Phase 10. Историческая доходность любой стратегии не гарантирует прибыль.
 
 ## Цель
 
@@ -12,7 +12,7 @@
 |---|---|---|---|
 | `backtest` | Исторические свечи | Симуляция | Phase 4 **готово** |
 | `paper` | Realtime Bybit | Симуляция, без API-ордеров | Phase 6 **готово** |
-| `testnet` | Bybit Testnet API | Реальные testnet-ордера через OrderManager | Phase 8 |
+| `testnet` | Bybit Testnet API | Реальные testnet-ордера через OrderManager | Phase 8 **готово** |
 | `mainnet` | Bybit Mainnet API | Реальные ордера только при `LIVE_TRADING_CONFIRM=true` | Phase 10 |
 
 `exchange.testnet` выбирает хост API (`api-testnet.bybit.com` / `api.bybit.com`). `MODE=testnet` требует `testnet: true`. `MODE=mainnet` требует `testnet: false`.
@@ -37,13 +37,13 @@ Bybit REST/WS  →  MarketData / AccountSnapshot
 
 Стратегия **не** отправляет ордера.
 
-Look-ahead (backtest): сигнал по закрытию свечи N исполняется только по следующей доступной цене (открытие N+1 / bid-ask), никогда по close N.
+Look-ahead (backtest/paper/testnet): сигнал по закрытию свечи N исполняется только на следующей подтверждённой свече, никогда по close N. Live REST warmup/catch-up историю обновляет, ордера не шлёт.
 
 ## Структура
 
 ```
 trading_bot/
-  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal, paper, order-status
+  main.py                 CLI: ping, market, account, stream, sync-candles, backtest, signal, paper, order-status, live
   config/                 YAML + overlay из .env
   core/                   ошибки, retry, kill switch, redaction, id событий
   exchange/               REST (pybit), rate limit, WebSocket, спецификация инструмента
@@ -55,6 +55,7 @@ trading_bot/
   execution/              slippage/spread/fees + SimulatedBroker + OrderManager
   backtest/               event-driven engine, метрики, OOS, walk-forward
   paper/                  Phase 6: live/replay paper loop, SQLite restore
+  live/                   Phase 8: testnet loop, restore from exchange, next-bar orders
   database/               SQLite, схема готова к PostgreSQL
 config/config.yaml
 config/.env.example
@@ -77,6 +78,7 @@ tests/integration
 | `execution` | Исполнение + комиссии/slippage; OrderManager — идемпотентность и SL | Не считает сигнал |
 | `backtest` | Event-driven симуляция | Не подглядывает в будущее |
 | `paper` | Realtime/replay, виртуальные ордера в SQLite | Не вызывает API ордеров |
+| `live` | Testnet loop: биржа = истина, ордера через OrderManager | Не работает в paper/backtest/mainnet |
 | `monitoring` | Логи/алерты | Не пишет secret/token в лог |
 
 ## Библиотеки (Phase 1)
@@ -139,7 +141,7 @@ tests/integration
 5. **Phase 5:** risk manager / position sizing.
 6. **Phase 6:** paper engine (live kline / CSV replay, simulated fills, restore-on-start). **готово**
 7. **Phase 7:** order manager, idempotency, fill confirmation, SL/TP на бирже. **готово**
-8. Phase 8: testnet live loop + restore-on-start.
+8. **Phase 8:** testnet live loop + restore-on-start (exchange is source of truth). **готово**
 9. Phase 9: Telegram.
 10. Phase 10: mainnet guards.
 

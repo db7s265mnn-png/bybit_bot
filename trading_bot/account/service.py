@@ -27,6 +27,14 @@ class WalletSnapshot:
     total_perp_upl: Decimal
     coins: tuple[CoinBalance, ...]
 
+    def equity_for(self, settle_coin: str = "USDT") -> Decimal:
+        """Prefer the settle-coin equity; fall back to unified totalEquity."""
+        settle = settle_coin.strip().upper()
+        for coin in self.coins:
+            if coin.coin.upper() == settle:
+                return coin.equity
+        return self.total_equity
+
 
 @dataclass(frozen=True)
 class PositionSnapshot:
@@ -153,6 +161,26 @@ def _parse_orders(payload: dict[str, Any]) -> tuple[OpenOrderSnapshot, ...]:
     )
 
 
+def has_protective_sl(position: PositionSnapshot) -> bool:
+    sl = (position.stop_loss or "").strip()
+    if not sl or sl in {"0", "0.0", "0.00"}:
+        return False
+    try:
+        return to_decimal(sl) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def parse_ws_position_message(payload: dict[str, Any]) -> tuple[PositionSnapshot, ...]:
+    topic = str(payload.get("topic") or "")
+    if topic != "position" and not topic.startswith("position."):
+        return ()
+    rows = payload.get("data") or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return _parse_positions({"result": {"list": rows}})
+
+
 def _parse_api_key(result: dict[str, Any]) -> ApiKeySnapshot:
     wallet = tuple(str(item) for item in (result.get("permissions") or {}).get("Wallet") or [])
     return ApiKeySnapshot(
@@ -171,14 +199,20 @@ class AccountService:
 
     def snapshot(self, *, symbol: str | None = None) -> AccountSnapshot:
         api_key_raw = self._client.assert_safe_api_key()
-        wallet = _parse_wallet(self._client.get_wallet_balance())
-        positions = _parse_positions(self._client.get_positions(symbol))
-        orders = _parse_orders(self._client.get_open_orders(symbol))
-        fees = self._client.get_fee_rates(symbol)
         return AccountSnapshot(
-            wallet=wallet,
-            positions=positions,
-            open_orders=orders,
+            wallet=self.wallet(),
+            positions=self.positions(symbol),
+            open_orders=self.open_orders(symbol),
             api_key=_parse_api_key(api_key_raw),
-            fee_rates=fees.get("result") or {},
+            fee_rates=(self._client.get_fee_rates(symbol).get("result") or {}),
         )
+
+    def wallet(self) -> WalletSnapshot:
+        """Wallet only. Does not re-check API-key permissions (snapshot() does that once)."""
+        return _parse_wallet(self._client.get_wallet_balance())
+
+    def positions(self, symbol: str | None = None) -> tuple[PositionSnapshot, ...]:
+        return _parse_positions(self._client.get_positions(symbol))
+
+    def open_orders(self, symbol: str | None = None) -> tuple[OpenOrderSnapshot, ...]:
+        return _parse_orders(self._client.get_open_orders(symbol))

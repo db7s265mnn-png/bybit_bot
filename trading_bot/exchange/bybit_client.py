@@ -390,6 +390,31 @@ class BybitRESTClient:
             return hist_rows[0]
         return None
 
+    def set_leverage(
+        self,
+        *,
+        symbol: str,
+        buy_leverage: str,
+        sell_leverage: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /v5/position/set-leverage. retCode 110043 (not modified) is success."""
+        self._require_keys()
+        self._assert_mutating()
+        sell = sell_leverage if sell_leverage is not None else buy_leverage
+        try:
+            return self._call(
+                "set_leverage",
+                category=self.category.value,
+                symbol=symbol,
+                buyLeverage=str(buy_leverage),
+                sellLeverage=str(sell),
+            )
+        except InvalidOrderError as exc:
+            if exc.ret_code == 110043:
+                logger.info("leverage_unchanged", symbol=symbol, leverage=str(buy_leverage))
+                return {"retCode": 110043, "retMsg": "leverage not modified", "result": {}}
+            raise
+
     def set_trading_stop(
         self,
         *,

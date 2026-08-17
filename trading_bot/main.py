@@ -30,7 +30,10 @@ from trading_bot.market.csv_io import candles_from_csv
 from trading_bot.market.market_data import MarketDataService
 from trading_bot.market.store import CandleStore
 from trading_bot.monitoring.logger import configure_logging, get_logger
+from trading_bot.execution.order_manager import OrderManager
 from trading_bot.execution.order_state import parse_exchange_order
+from trading_bot.live.engine import TESTNET_DISCLAIMER, LiveEngine, require_testnet_live
+from trading_bot.live.runner import apply_leverage, run_testnet_loop
 from trading_bot.paper.engine import PAPER_DISCLAIMER, PaperEngine
 from trading_bot.paper.runner import run_live, run_replay
 from trading_bot.risk.risk_manager import RiskManager
@@ -114,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     order_status.add_argument("--link-id", required=True, help="Bybit orderLinkId")
     order_status.add_argument("--symbol", default=None)
+    live = sub.add_parser("live", help="Testnet live loop: real testnet orders via OrderManager (not mainnet)")
+    live.add_argument("--symbol", default=None)
+    live.add_argument("--seconds", type=float, default=None, help="Stop after N seconds (default: until interrupt)")
+    live.add_argument("--session", default="testnet", help="SQLite session id for cursor/risk overlay")
+    live.add_argument("--warmup", type=int, default=200, help="Confirmed candles to seed the strategy before live bars")
+    live.add_argument("--dry-run", action="store_true", help="Log order intents without calling place/cancel")
+    live.add_argument("--no-private-ws", action="store_true", help="Do not subscribe to private order/position WS")
     return parser
 
 
@@ -509,6 +519,81 @@ def cmd_paper(
         db.close()
 
 
+def cmd_live(
+    config: AppConfig,
+    *,
+    symbols: list[str],
+    seconds: float | None,
+    session_id: str,
+    warmup: int,
+    dry_run: bool,
+    enable_private_ws: bool,
+    client: BybitRESTClient | None,
+    kill_switch: KillSwitch,
+) -> int:
+    require_testnet_live(config)
+    if client is None:
+        raise TradingBotError("live requires a Bybit REST client")
+    if not config.secrets.has_bybit_keys():
+        raise TradingBotError("live requires BYBIT_API_KEY and BYBIT_API_SECRET")
+    print(TESTNET_DISCLAIMER, file=sys.stderr)
+    db = _open_db(config)
+    engine: LiveEngine | None = None
+    try:
+        instruments = {}
+        for sym in symbols:
+            instrument, _source = resolve_instrument(config, sym, db)
+            try:
+                instrument = client.get_instrument(sym)
+                db.save_instrument(instrument)
+            except (TradingBotError, GeoRestrictedError):
+                pass
+            instruments[sym] = instrument
+        strategy = create_strategy(config.strategy.name, params=config.strategy.params)
+        risk = RiskManager(config, kill_switch)
+        account = AccountService(client)
+        orders = OrderManager(
+            config,
+            client,
+            database=db,
+            kill_switch=kill_switch,
+            session_id=session_id,
+        )
+        engine = LiveEngine(
+            config,
+            strategy,
+            risk,
+            instruments,
+            account=account,
+            orders=orders,
+            database=db,
+            kill_switch=kill_switch,
+            session_id=session_id,
+            dry_run=dry_run,
+        )
+        engine.restore()
+        apply_leverage(config, client, symbols, dry_run=dry_run)
+        snapshot = run_testnet_loop(
+            config,
+            engine,
+            market=MarketDataService(client),
+            symbols=symbols,
+            seconds=seconds,
+            warmup=warmup,
+            client=None,
+            enable_private_ws=enable_private_ws,
+        )
+        snapshot["real_orders"] = not dry_run
+        _print(snapshot)
+        return 0
+    except KeyboardInterrupt:
+        if engine is not None:
+            _print(engine.snapshot(mark=engine.last_mark_candle()))
+        return 0
+    finally:
+        db.close()
+
+
 def cmd_order_status(client: BybitRESTClient, symbol: str, link_id: str) -> int:
     row = client.get_order(symbol=symbol, order_link_id=link_id)
     if row is None:
@@ -557,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "stream",
         "sync-candles",
         "order-status",
+        "live",
     }
     if args.command in {"backtest", "signal", "paper"}:
         needs_client = not getattr(args, "csv", None) and not getattr(args, "from_db", False)
@@ -603,6 +689,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             kill_switch=kill_switch,
         ),
         "order-status": lambda: cmd_order_status(client, symbol, args.link_id),
+        "live": lambda: cmd_live(
+            config,
+            symbols=[symbol] if getattr(args, "symbol", None) else list(config.exchange.symbols),
+            seconds=args.seconds,
+            session_id=args.session,
+            warmup=args.warmup,
+            dry_run=args.dry_run,
+            enable_private_ws=not args.no_private_ws,
+            client=client,
+            kill_switch=kill_switch,
+        ),
     }
     try:
         return commands[args.command]()

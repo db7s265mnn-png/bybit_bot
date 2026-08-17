@@ -32,6 +32,7 @@ def test_wallet_parser_reads_unified_account() -> None:
     wallet = _parse_wallet(payload)
     assert wallet.total_equity == 10000
     assert wallet.coins[0].coin == "USDT"
+    assert wallet.equity_for("USDT") == 10000
 
 
 def test_zero_size_positions_are_ignored() -> None:
