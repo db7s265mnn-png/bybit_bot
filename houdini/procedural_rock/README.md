@@ -91,5 +91,6 @@ build(geo_name="procedural_pinnacle", shape=1)
 | `vex/pt_05_mesh_lookdev.vex` | Attribute Wrangle, Points |
 | `python/build_rock_network.py` | собирает `/obj/procedural_rock` |
 | `python/preview_rock_sdf.py` | сфертрейс того же SDF без Houdini |
+| [`../mcp/README.md`](../mcp/README.md) | MCP sidecar: Cursor запускает Houdini на вашем ПК |
 | `preview/cliff.png` | превью стены (shape 0) |
 | `preview/pinnacle.png` | превью пинакля (shape 1) |
