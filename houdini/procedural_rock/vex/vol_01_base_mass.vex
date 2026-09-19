@@ -1,0 +1,155 @@
+// Volume Wrangle — overwrite the bounds-box SDF with cliff / pinnacle mass.
+// Bind Distance VDB as `surface`. Y-up, cliff face toward +Z (photo 1 / 2).
+//
+// shape 0 = layered limestone WALL (photo 1). Built as a 2D XY profile
+//           extruded in Z so it reads as a face, not a baked-potato blob.
+// shape 1 = isolated karst pinnacle (photo 2): uneven standing stone.
+
+float smin(float a; float b; float k)
+{
+    if (k <= 1e-6)
+        return min(a, b);
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+
+float smax(float a; float b; float k)
+{
+    return -smin(-a, -b, k);
+}
+
+float sd_box2(float x; float y; float bx; float by)
+{
+    float qx = abs(x) - bx;
+    float qy = abs(y) - by;
+    return sqrt(max(qx, 0.0) * max(qx, 0.0) + max(qy, 0.0) * max(qy, 0.0))
+         + min(max(qx, qy), 0.0);
+}
+
+float sd_circle2(float x; float y; float r)
+{
+    return sqrt(x * x + y * y) - r;
+}
+
+float fbm2(float x; float y; int octaves)
+{
+    float amp = 1.0;
+    float sum = 0.0;
+    float norm = 0.0;
+    vector q = set(x, y, 0.0);
+    int n = max(octaves, 1);
+    for (int i = 0; i < n; i++)
+    {
+        sum += amp * (noise(q) * 2.0 - 1.0);
+        norm += amp;
+        amp *= 0.5;
+        q *= 2.05;
+    }
+    return sum / max(norm, 1e-6);
+}
+
+float sd_ellipse2(float x; float y; float rx; float ry)
+{
+    float k0 = sqrt((x / rx) * (x / rx) + (y / ry) * (y / ry));
+    float k1 = sqrt((x / (rx * rx)) * (x / (rx * rx))
+                  + (y / (ry * ry)) * (y / (ry * ry)));
+    return k0 * (k0 - 1.0) / max(k1, 1e-6);
+}
+
+float sd_ellipsoid(vector p; vector r)
+{
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / max(k1, 1e-6);
+}
+
+int   shape         = chi("shape");          // 0 cliff wall, 1 pinnacle
+float height        = chf("height");         // 3.6
+float width         = chf("width");          // 2.4
+float depth         = chf("depth");          // 0.72  half-thickness of the wall
+float top_taper     = chf("top_taper");      // 0.72
+float base_flare    = chf("base_flare");     // 1.16
+float face_slope    = chf("face_slope");     // 0.08
+float lean          = chf("lean");           // 0.10  pinnacle lean
+float roundness     = chf("roundness");      // 0.10
+float smooth_k      = chf("smooth_k");       // 0.20
+float head_overhang = chf("head_overhang");  // 0.34  snout in -X
+float terrace_y     = chf("terrace_y");      // 0.05
+int   seed          = chi("seed");
+
+vector p = v@P;
+
+float hsh = frac(sin(seed * 17.23) * 43758.5);
+p.x += p.y * (hsh - 0.5) * 0.07;
+p.z += p.y * lean * ((shape == 1) ? 1.0 : 0.12);
+
+float ny = fit(p.y, -height, height, 0.0, 1.0);
+float taper = lerp(base_flare, top_taper, pow(clamp(ny, 0.0, 1.0), 1.05));
+vector q = p;
+q.x /= max(taper, 0.18);
+
+float d;
+if (shape == 0)
+{
+    // 2D silhouette in XY (photo 1 animal-head wall), then slab in Z.
+    // Main shaft is narrower than the head so the snout actually reads.
+    float d2 = sd_box2(q.x, q.y, width * 0.78, height * 0.92) - roundness;
+
+    // Pale upper mass / "head" — sits outside the shaft on -X.
+    float hx = q.x + width * (0.22 + head_overhang * 0.55);
+    float hy = q.y - height * 0.50;
+    d2 = smin(d2, sd_ellipse2(hx, hy, width * 0.70, height * 0.40), smooth_k);
+
+    // Left snout / animal profile.
+    float bx = q.x + width * (0.72 + head_overhang * 0.55);
+    float by = q.y - height * 0.64;
+    d2 = smin(d2, sd_ellipse2(bx, by, width * 0.48, height * 0.17), smooth_k);
+
+    // Crown peak above the box lid, slightly left.
+    d2 = smin(d2, sd_ellipse2(q.x + width * 0.12, q.y - height * 1.00,
+                             width * 0.50, height * 0.20), smooth_k);
+
+    // Ground flare.
+    d2 = smin(d2, sd_box2(q.x, q.y + height * 0.84, width * 1.05, height * 0.26) - roundness,
+              smooth_k);
+
+    // Soft left-hand terrace indent — not a rectangular CSG hole.
+    float terr = 1.0 - smooth(0.0, height * 0.18, abs(q.y - terrace_y));
+    float left = 1.0 - smooth(-width * 0.15, width * 0.65, q.x);
+    d2 += terr * left * 0.14;
+
+    // Irregular cliff outline (breaks the extruded-box look).
+    d2 += fbm2(q.x * 0.48 + seed, q.y * 0.48, 4) * 0.38;
+
+    // Extrude: thin wall. Face slants back with height (weathered).
+    float half_z = depth * lerp(1.08, 0.78, ny);
+    float face_z = q.z - face_slope * (q.y + height) * 0.15;
+    float slab = abs(face_z) - half_z;
+    d = smax(d2, slab, 0.14);
+
+    // Keep a flat back so it reads as a cliff, not a free stone.
+    d = smax(d, -q.z - depth * 1.15, 0.18);
+}
+else
+{
+    q.z /= max(taper * 0.96, 0.14);
+    // Asymmetric tooth: lean body + offset tip + right-hand shoulder (photo 2).
+    d = sd_ellipsoid(q, set(width * 0.58, height * 0.88, depth * 0.50));
+
+    vector tip = q - set(width * 0.28, height * 0.68, -depth * 0.05);
+    d = smin(d, sd_ellipsoid(tip, set(width * 0.30, height * 0.46, depth * 0.26)),
+             smooth_k);
+
+    vector sh_c = q - set(width * 0.40, -height * 0.18, 0.0);
+    d = smin(d, sd_ellipsoid(sh_c, set(width * 0.50, height * 0.52, depth * 0.38)),
+             smooth_k);
+
+    // Steep viewer-left face.
+    float face = q.x * 0.18 + q.z - depth * 0.22 + ny * face_slope * height * 0.22;
+    d = smax(d, face, smooth_k * 1.1);
+}
+
+float ground = p.y + height;
+d = smax(d, -ground, 0.20);
+
+f@surface = d;

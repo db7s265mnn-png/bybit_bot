@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "houdini": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/houdini/mcp/server.py"
+      ],
+      "env": {
+        "HOUDINI_MCP_HOST": "127.0.0.1",
+        "HOUDINI_MCP_PORT": "18991"
+      }
+    }
+  }
+}

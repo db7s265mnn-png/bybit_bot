@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+.cursor_houdini_mcp_token
+.cursor_houdini_mcp_sidecar.log
