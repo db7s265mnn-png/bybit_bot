@@ -1,0 +1,96 @@
+// Volume Wrangle — overwrite box SDF with the cliff / pinnacle mass.
+// Bind the Distance VDB as `surface`. Y-up, cliff faces +Z like the references.
+
+float smin(float a; float b; float k)
+{
+    if (k <= 1e-6)
+        return min(a, b);
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+
+float smax(float a; float b; float k)
+{
+    return -smin(-a, -b, k);
+}
+
+float sd_round_box(vector p; vector b; float r)
+{
+    vector q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+float sd_ellipsoid(vector p; vector r)
+{
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / max(k1, 1e-6);
+}
+
+int   shape      = chi("shape");          // 0 cliff wall, 1 isolated pinnacle
+float height     = chf("height");         // 3.6
+float width      = chf("width");          // 2.4
+float depth      = chf("depth");          // 1.15
+float top_taper  = chf("top_taper");      // 0.55  narrower crown
+float base_flare = chf("base_flare");     // 1.18
+float face_slope = chf("face_slope");     // 0.12  receding face with height
+float lean       = chf("lean");           // 0.08  pinnacle lean in Z
+float roundness  = chf("roundness");      // 0.16
+float smooth_k   = chf("smooth_k");       // 0.18
+int   seed       = chi("seed");
+
+vector p = v@P;
+p += set(0.0, 0.0, 0.0);
+
+// Seeded slight shear so two cooks don't look identical.
+float hsh = frac(sin(seed * 17.23) * 43758.5);
+p.x += p.y * (hsh - 0.5) * 0.12;
+p.z += p.y * lean;
+
+float ny = fit(p.y, -height, height, 0.0, 1.0);
+float taper = lerp(base_flare, top_taper, pow(clamp(ny, 0.0, 1.0), 1.15));
+vector q = p;
+q.x /= max(taper, 0.15);
+q.z /= max(taper * 0.92, 0.12);
+
+float d;
+if (shape == 0)
+{
+    // Wide limestone wall: rounded slab + thicker pedestal.
+    vector half = set(width, height, depth);
+    d = sd_round_box(q, half, roundness);
+
+    vector pedestal_p = p - set(0.0, -height * 0.72, depth * 0.15);
+    float pedestal = sd_round_box(
+        pedestal_p,
+        set(width * 1.15, height * 0.38, depth * 1.25),
+        roundness * 1.4
+    );
+    d = smin(d, pedestal, smooth_k);
+
+    // Receding weathered face (photo 1).
+    float face = q.z - (depth * 0.15) + ny * face_slope * height;
+    d = smax(d, face, smooth_k * 1.4);
+
+    // Flatten the back so it reads as a cliff, not a blob.
+    float back = -q.z - depth * 1.05;
+    d = smax(d, back, 0.25);
+}
+else
+{
+    // Isolated karst pinnacle (photo 2): tall ellipsoid + pointed cap.
+    d = sd_ellipsoid(q, set(width * 0.72, height, depth * 0.85));
+    vector cap = q - set(0.0, height * 0.55, 0.0);
+    float spire = sd_ellipsoid(cap, set(width * 0.38, height * 0.55, depth * 0.42));
+    d = smin(d, spire, smooth_k);
+
+    // Cut a steep sunny face.
+    float face = q.z - depth * 0.05 + ny * face_slope * height * 0.6;
+    d = smax(d, face, smooth_k);
+}
+
+// Ground skirt so the mass meets Y=0 cleanly.
+float ground = p.y + height;
+d = smax(d, -ground, 0.2);
+
+f@surface = d;

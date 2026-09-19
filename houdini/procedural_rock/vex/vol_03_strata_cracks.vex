@@ -1,0 +1,62 @@
+// Volume Wrangle — sedimentary bedding + vertical joints.
+// Matches the limestone references: horizontal ledges, vertical fracture net.
+
+float fbm(vector p; int octaves; float roughness)
+{
+    float amp = 1.0;
+    float sum = 0.0;
+    float norm = 0.0;
+    vector q = p;
+    int n = max(octaves, 1);
+    for (int i = 0; i < n; i++)
+    {
+        sum += amp * (noise(q) * 2.0 - 1.0);
+        norm += amp;
+        amp *= roughness;
+        q *= 2.07;
+    }
+    return sum / max(norm, 1e-6);
+}
+
+float strata_freq   = chf("strata_freq");    // 4.5   bands per unit height
+float strata_depth  = chf("strata_depth");   // 0.055 groove depth
+float strata_sharp  = chf("strata_sharp");   // 6.0   higher = thinner beds
+float strata_tilt   = chf("strata_tilt");    // 0.04  slight dip
+float strata_warp   = chf("strata_warp");    // 0.35  wavy bedding
+float crack_freq    = chf("crack_freq");     // 1.7
+float crack_depth   = chf("crack_depth");    // 0.07
+float crack_width   = chf("crack_width");    // 0.07  smaller = tighter joints
+float crack_stretch = chf("crack_stretch");  // 0.12  vertical joints
+int   seed          = chi("seed");
+
+vector p = v@P;
+
+// --- Horizontal strata (Gatis Kurzemnieks / Matt Ebb layer idea, in SDF) ---
+float bed_y = p.y + p.z * strata_tilt
+            + fbm(set(p.x, 0.0, p.z) * 0.65 + seed, 3, 0.5) * strata_warp;
+float wave = sin(bed_y * strata_freq * 6.28318);
+// Carve at zero-crossings = bedding planes, not at the fat middle of a layer.
+float groove = pow(1.0 - abs(wave), strata_sharp);
+f@surface += groove * strata_depth;
+
+// Occasional thicker ledge: every ~N layers recede more.
+float pack = abs(sin(bed_y * strata_freq * 0.33 + seed));
+f@surface += pow(pack, 10.0) * strata_depth * 0.65;
+
+// --- Vertical / steep joints (Worley cell walls in XZ, stretched in Y) ---
+float f1, f2;
+vector jp = set(p.x, p.y * crack_stretch, p.z) * crack_freq;
+jp += set(seed * 0.19, 0.0, seed * 0.41);
+wnoise(jp, f1, f2);
+float edge = f2 - f1;
+float joint = 1.0 - smooth(0.0, crack_width, edge);
+f@surface += joint * crack_depth;
+
+// Secondary joint family, rotated ~35 deg, weaker — cross-bedding cracks.
+float ca = 0.6;
+float sa = 0.8;
+vector rp = set(p.x * ca - p.z * sa, p.y * crack_stretch, p.x * sa + p.z * ca);
+wnoise(rp * crack_freq * 0.72 + 4.2, f1, f2);
+float edge2 = f2 - f1;
+float joint2 = 1.0 - smooth(0.0, crack_width * 1.2, edge2);
+f@surface += joint2 * crack_depth * 0.45;

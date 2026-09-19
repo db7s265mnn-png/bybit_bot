@@ -1,0 +1,42 @@
+// Volume Wrangle — fine karst pitting and edge crumbling.
+// Small amplitude only. Run after strata so beds stay readable.
+
+float fbm(vector p; int octaves; float roughness)
+{
+    float amp = 1.0;
+    float sum = 0.0;
+    float norm = 0.0;
+    vector q = p;
+    int n = max(octaves, 1);
+    for (int i = 0; i < n; i++)
+    {
+        sum += amp * (noise(q) * 2.0 - 1.0);
+        norm += amp;
+        amp *= roughness;
+        q *= 2.11;
+    }
+    return sum / max(norm, 1e-6);
+}
+
+float pit_amp    = chf("pit_amp");     // 0.018
+float pit_freq   = chf("pit_freq");    // 6.5
+float crumb_amp  = chf("crumb_amp");   // 0.025
+float crumb_freq = chf("crumb_freq");  // 3.2
+float cave_amp   = chf("cave_amp");    // 0.03   shallow alcoves
+float cave_freq  = chf("cave_freq");   // 1.4
+int   seed       = chi("seed");
+
+vector p = v@P + seed * 0.07;
+
+// High-frequency pitting (lichen / dissolved limestone).
+float pits = fbm(p * pit_freq, 4, 0.55);
+f@surface += pits * pit_amp;
+
+// Mid crumbs: break silhouette without killing strata.
+float crumbs = fbm(p * crumb_freq + set(11.0, 0, 0), 3, 0.5);
+f@surface += crumbs * crumb_amp;
+
+// Sparse alcoves: only carve where a cheap ridge is high.
+float cave_n = noise(p * cave_freq + 19.0);
+float alcove = smooth(0.72, 0.92, cave_n);
+f@surface += alcove * cave_amp;

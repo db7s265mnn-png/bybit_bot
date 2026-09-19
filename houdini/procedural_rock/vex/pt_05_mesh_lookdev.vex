@@ -1,0 +1,16 @@
+// Attribute Wrangle (Points) — after Convert VDB + Normal SOP.
+// Simple limestone look: pale beds on ledges, cooler vertical faces.
+
+vector n = normalize(v@N);
+float up = clamp(n.y, 0.0, 1.0);
+float h = clamp(fit(v@P.y, chf("y_min"), chf("y_max"), 0.0, 1.0), 0.0, 1.0);
+
+vector dirt  = chv("dirt_color");   // 0.34 0.31 0.27
+vector face  = chv("face_color");   // 0.55 0.53 0.50
+vector ledge = chv("ledge_color");  // 0.80 0.76 0.66
+
+vector base = lerp(dirt, face, h);
+v@Cd = lerp(base, ledge, pow(up, chf("ledge_gamma")));  // 2.1
+
+f@slope = 1.0 - up;
+f@height01 = h;
