@@ -8,13 +8,31 @@ Cursor на **вашем** компьютере запускает `server.py` �
 
 Этот агент крутится на чужой VM. Ваш `127.0.0.1` отсюда не виден, self-hosted worker не подключён. Команды в Houdini заработают, когда вы откроете **этот репозиторий в Cursor Desktop** на машине с Houdini (или поставите [self-hosted worker](https://cursor.com/docs/cloud-agent/self-hosted) на тот же ПК).
 
+## Где это в Cursor (экран Customize → MCPs)
+
+Левая колонка **Customize**, сверху чип **MCPs**, заголовок *Connect External Tools with MCP*, кнопки **+ New** и **Documentation** — это витрина **облачных** MCP (Linear, Figma, Notion). Houdini в Marketplace нет и в этом списке сам не появится. **Browse Marketplace не нужен.**
+
+Локальный Houdini подключается так:
+
+1. Откройте **приложение Cursor** (редактор кода), не только сайт агентов. File → Open Folder → этот репозиторий, ветка с файлом `.cursor/mcp.json`.
+2. Снова Customize → MCPs. Если проект подхвачен, в списке будет сервер `houdini` из `mcp.json`.
+3. Если список пустой — **+ New** и локальный / stdio сервер (не URL):
+   - Name: `houdini`
+   - Command: `python` (если нет в PATH — `py`)
+   - Args: `-3` (только для `py`) и полный путь  
+     `C:\путь\к\bybit_bot\houdini\mcp\server.py`
+   - Env: `HOUDINI_MCP_HOST=127.0.0.1`, `HOUDINI_MCP_PORT=18991`
+4. Если **+ New** просит только URL (`http://...`) — это форма для Linear/Figma. Закройте её: наш сервер не HTTP, а локальный процесс.
+
+С этой же страницы на сайте агентов облако **не дотянется** до Houdini на вашем ПК: `127.0.0.1` там — это не ваш компьютер.
+
 ## Один раз на Windows
 
 1. Установите SideFX Houdini. Если `hython` не в PATH — задайте `HFS`, например  
    `C:\Program Files\Side Effects Software\Houdini 20.5.445`
-2. В проекте уже есть `.cursor/mcp.json`. Если Cursor не находит `python`, поменяйте команду на `py` и args на `-3` + путь к `houdini/mcp/server.py`.
-3. Cursor Settings → MCP → сервер `houdini` должен стать зелёным. Reload Window, если нет.
-4. Скажите в чате: «запусти Houdini и собери скалу».
+2. Файл `.cursor/mcp.json` уже в репозитории. Если Cursor не находит `python`, в нём поставьте `"command": "py"` и args `["-3", "${workspaceFolder}/houdini/mcp/server.py"]`.
+3. Customize → MCPs → сервер `houdini` зелёный. Иначе Reload Window.
+4. В чате редактора: «запусти Houdini и собери скалу».
 
 Либо откройте Houdini сами и поставьте автостарт sidecar:
 
