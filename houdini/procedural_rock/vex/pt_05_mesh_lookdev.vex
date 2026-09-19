@@ -1,16 +1,25 @@
 // Attribute Wrangle (Points) — after Convert VDB + Normal SOP.
-// Simple limestone look: pale beds on ledges, cooler vertical faces.
+// Photo 1 look: dark lower shaft, pale cream beds above terrace,
+// bleached ledges, cooler vertical faces.
 
 vector n = normalize(v@N);
 float up = clamp(n.y, 0.0, 1.0);
 float h = clamp(fit(v@P.y, chf("y_min"), chf("y_max"), 0.0, 1.0), 0.0, 1.0);
 
-vector dirt  = chv("dirt_color");   // 0.34 0.31 0.27
-vector face  = chv("face_color");   // 0.55 0.53 0.50
-vector ledge = chv("ledge_color");  // 0.80 0.76 0.66
+vector dirt  = chv("dirt_color");    // 0.27 0.26 0.25
+vector face  = chv("face_color");    // 0.40 0.38 0.36
+vector pale  = chv("pale_color");    // 0.84 0.80 0.66
+vector ledge = chv("ledge_color");   // 0.88 0.84 0.70
 
-vector base = lerp(dirt, face, h);
-v@Cd = lerp(base, ledge, pow(up, chf("ledge_gamma")));  // 2.1
+float terrace = chf("terrace_01");   // 0.50  normalized Y of the color split
+float split = smooth(terrace - 0.04, terrace + 0.07, h);
+
+vector base = lerp(dirt, face, clamp(h / max(terrace, 0.05), 0.0, 1.0));
+base = lerp(base, pale, split);
+
+// Vertical faces stay a bit cooler / darker; ledges bleach.
+base = lerp(base, face * 0.85, pow(1.0 - up, 1.6) * 0.35);
+v@Cd = lerp(base, ledge, pow(up, chf("ledge_gamma")));  // 2.0
 
 f@slope = 1.0 - up;
 f@height01 = h;

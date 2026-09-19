@@ -1,4 +1,4 @@
-// Volume Wrangle — fine karst pitting and edge crumbling.
+// Volume Wrangle — fine karst pitting, crumbs, alcoves, rain streaks.
 // Small amplitude only. Run after strata so beds stay readable.
 
 float fbm(vector p; int octaves; float roughness)
@@ -18,25 +18,32 @@ float fbm(vector p; int octaves; float roughness)
     return sum / max(norm, 1e-6);
 }
 
-float pit_amp    = chf("pit_amp");     // 0.018
-float pit_freq   = chf("pit_freq");    // 6.5
-float crumb_amp  = chf("crumb_amp");   // 0.025
-float crumb_freq = chf("crumb_freq");  // 3.2
-float cave_amp   = chf("cave_amp");    // 0.03   shallow alcoves
-float cave_freq  = chf("cave_freq");   // 1.4
-int   seed       = chi("seed");
+float pit_amp     = chf("pit_amp");      // 0.016
+float pit_freq    = chf("pit_freq");     // 6.8
+float crumb_amp   = chf("crumb_amp");    // 0.022
+float crumb_freq  = chf("crumb_freq");   // 3.0
+float cave_amp    = chf("cave_amp");     // 0.028
+float cave_freq   = chf("cave_freq");    // 1.35
+float streak_amp  = chf("streak_amp");   // 0.012  vertical rain / lichen
+float streak_freq = chf("streak_freq");  // 2.4
+int   seed        = chi("seed");
 
 vector p = v@P + seed * 0.07;
 
-// High-frequency pitting (lichen / dissolved limestone).
+// High-frequency pitting (dissolved limestone / lichen cups).
 float pits = fbm(p * pit_freq, 4, 0.55);
 f@surface += pits * pit_amp;
 
-// Mid crumbs: break silhouette without killing strata.
+// Mid crumbs: break the silhouette without killing strata.
 float crumbs = fbm(p * crumb_freq + set(11.0, 0, 0), 3, 0.5);
 f@surface += crumbs * crumb_amp;
 
-// Sparse alcoves: only carve where a cheap ridge is high.
+// Sparse alcoves: carve only where a cheap ridge is high.
 float cave_n = noise(p * cave_freq + 19.0);
-float alcove = smooth(0.72, 0.92, cave_n);
+float alcove = smooth(0.74, 0.93, cave_n);
 f@surface += alcove * cave_amp;
+
+// Vertical streaks: anisotropic fbm (stretch Y) — runoff / water tracks.
+vector sp = set(p.x, p.y * 0.18, p.z) * streak_freq;
+float streaks = fbm(sp + set(0, seed, 0), 3, 0.45);
+f@surface += streaks * streak_amp;

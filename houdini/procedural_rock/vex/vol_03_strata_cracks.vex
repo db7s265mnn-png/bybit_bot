@@ -1,5 +1,11 @@
 // Volume Wrangle — sedimentary bedding + vertical joints.
-// Matches the limestone references: horizontal ledges, vertical fracture net.
+// Photo 1: hard/soft beds (differential weathering) + terrace,
+//          joints stronger on the dark lower shaft.
+// Photo 2: keep strata shallow so the mass stays monolithic.
+//
+// Beds: Paris / Gain implicit strata + Kurzemnieks / Matt Ebb layers,
+// implemented as a periodic hardness field on the SDF.
+// Joints: cheap Worley cell walls (Jlassi Voronoi idea, no shatter).
 
 float fbm(vector p; int octaves; float roughness)
 {
@@ -18,45 +24,65 @@ float fbm(vector p; int octaves; float roughness)
     return sum / max(norm, 1e-6);
 }
 
-float strata_freq   = chf("strata_freq");    // 4.5   bands per unit height
-float strata_depth  = chf("strata_depth");   // 0.055 groove depth
-float strata_sharp  = chf("strata_sharp");   // 6.0   higher = thinner beds
-float strata_tilt   = chf("strata_tilt");    // 0.04  slight dip
-float strata_warp   = chf("strata_warp");    // 0.35  wavy bedding
-float crack_freq    = chf("crack_freq");     // 1.7
-float crack_depth   = chf("crack_depth");    // 0.07
-float crack_width   = chf("crack_width");    // 0.07  smaller = tighter joints
-float crack_stretch = chf("crack_stretch");  // 0.12  vertical joints
+float strata_freq   = chf("strata_freq");    // 3.4   thicker beds, fewer pancakes
+float strata_depth  = chf("strata_depth");   // 0.024  keep shallow — ledges, not pancakes
+float strata_sharp  = chf("strata_sharp");   // 6.0
+float strata_tilt   = chf("strata_tilt");    // 0.04
+float strata_warp   = chf("strata_warp");    // 0.55
+float hard_push     = chf("hard_push");      // 0.35  hard beds stick out
+float terrace_y     = chf("terrace_y");      // 0.08
+float terrace_depth = chf("terrace_depth");  // 0.045 extra groove at the split
+float crack_freq    = chf("crack_freq");     // 1.85
+float crack_depth   = chf("crack_depth");    // 0.075
+float crack_width   = chf("crack_width");    // 0.065
+float crack_stretch = chf("crack_stretch");  // 0.11
 int   seed          = chi("seed");
 
 vector p = v@P;
 
-// --- Horizontal strata (Gatis Kurzemnieks / Matt Ebb layer idea, in SDF) ---
+// Height masks: beds dominate above the terrace, joints below (photo 1).
+float above = smooth(terrace_y - 0.35, terrace_y + 0.55, p.y);
+float below = 1.0 - above * 0.55;
+
+// --- Differential weathering (soft recede, hard protrude) ---
 float bed_y = p.y + p.z * strata_tilt
-            + fbm(set(p.x, 0.0, p.z) * 0.65 + seed, 3, 0.5) * strata_warp;
-float wave = sin(bed_y * strata_freq * 6.28318);
-// Carve at zero-crossings = bedding planes, not at the fat middle of a layer.
+            + fbm(set(p.x, 0.0, p.z) * 0.62 + seed, 3, 0.5) * strata_warp;
+// Irregular bed thickness: slow second wave stretches the phase.
+bed_y += 0.18 * sin(bed_y * 1.7 + seed * 0.4);
+
+float phase = bed_y * strata_freq * 6.28318;
+float wave = sin(phase);
+
+// Carve bedding planes at zero-crossings (thin seams).
 float groove = pow(1.0 - abs(wave), strata_sharp);
-f@surface += groove * strata_depth;
+f@surface += groove * strata_depth * lerp(0.40, 1.0, above);
 
-// Occasional thicker ledge: every ~N layers recede more.
-float pack = abs(sin(bed_y * strata_freq * 0.33 + seed));
-f@surface += pow(pack, 10.0) * strata_depth * 0.65;
+// Soft beds (wave < 0) recede; hard beds (wave > 0) stick out as ledges.
+float soft = pow(max(-wave, 0.0), 1.35);
+float hard = pow(max( wave, 0.0), 2.10);
+f@surface += soft * strata_depth * 0.85 * lerp(0.30, 1.0, above);
+f@surface -= hard * strata_depth * hard_push * lerp(0.25, 1.0, above);
 
-// --- Vertical / steep joints (Worley cell walls in XZ, stretched in Y) ---
+// Occasional thicker pack / major ledge every ~3 layers.
+float pack = abs(sin(bed_y * strata_freq * 0.31 + seed));
+f@surface += pow(pack, 9.0) * strata_depth * 0.70 * above;
+
+// Extra recession at the pale/dark terrace (photo 1 shelf).
+float terr = 1.0 - smooth(0.0, 0.22, abs(p.y - terrace_y));
+f@surface += terr * terrace_depth;
+
+// --- Vertical / steep joints (Worley walls in XZ, stretched in Y) ---
 float f1, f2;
 vector jp = set(p.x, p.y * crack_stretch, p.z) * crack_freq;
 jp += set(seed * 0.19, 0.0, seed * 0.41);
 wnoise(jp, f1, f2);
-float edge = f2 - f1;
-float joint = 1.0 - smooth(0.0, crack_width, edge);
-f@surface += joint * crack_depth;
+float joint = 1.0 - smooth(0.0, crack_width, f2 - f1);
+f@surface += joint * crack_depth * below;
 
-// Secondary joint family, rotated ~35 deg, weaker — cross-bedding cracks.
-float ca = 0.6;
-float sa = 0.8;
+// Secondary family, ~37 deg, weaker — conjugate joints.
+float ca = 0.8;
+float sa = 0.6;
 vector rp = set(p.x * ca - p.z * sa, p.y * crack_stretch, p.x * sa + p.z * ca);
-wnoise(rp * crack_freq * 0.72 + 4.2, f1, f2);
-float edge2 = f2 - f1;
-float joint2 = 1.0 - smooth(0.0, crack_width * 1.2, edge2);
-f@surface += joint2 * crack_depth * 0.45;
+wnoise(rp * crack_freq * 0.70 + 4.2, f1, f2);
+float joint2 = 1.0 - smooth(0.0, crack_width * 1.25, f2 - f1);
+f@surface += joint2 * crack_depth * 0.40 * below;

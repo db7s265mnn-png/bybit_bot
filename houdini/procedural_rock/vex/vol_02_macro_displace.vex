@@ -1,6 +1,10 @@
 // Volume Wrangle — large SDF displacement + domain warp.
-// Do this in VDB space (Gatis Kurzemnieks / RenderEverything): do not
-// displace mesh points. Keep amplitude under voxel_size * exterior_band.
+// Kurzemnieks / RenderEverything: offset the voxel SDF, do not
+// displace mesh points. Keep |amp| under the active band
+// (≈ distance from rock to bounds-box, or voxel_size * exterior_band).
+//
+// 80.lv rock breakdown: Worley F2−F1, Y-stretched = jointed blocks.
+// IQ / Entagma: fbm(p + fbm(p)) domain warp to break the lattice.
 
 float fbm(vector p; int octaves; float roughness)
 {
@@ -26,32 +30,35 @@ float worley_f2f1(vector p)
     return f2 - f1;
 }
 
-float warp_amp   = chf("warp_amp");      // 0.35
-float warp_freq  = chf("warp_freq");     // 0.55
-float fbm_amp    = chf("fbm_amp");       // 0.22
-float fbm_freq   = chf("fbm_freq");      // 0.85
-int   fbm_oct    = chi("fbm_octaves");   // 5
-float fbm_rough  = chf("fbm_rough");     // 0.48
-float cell_amp   = chf("cell_amp");      // 0.16
-float cell_freq  = chf("cell_freq");     // 1.15
-float cell_stretch = chf("cell_stretch"); // 0.28  <1 stretches cells vertically
-int   seed       = chi("seed");
+float warp_amp     = chf("warp_amp");      // 0.22
+float warp_freq    = chf("warp_freq");     // 0.48
+float fbm_amp      = chf("fbm_amp");       // 0.12
+float fbm_freq     = chf("fbm_freq");      // 0.75
+int   fbm_oct      = chi("fbm_octaves");   // 5
+float fbm_rough    = chf("fbm_rough");     // 0.46
+float cell_amp     = chf("cell_amp");      // 0.08
+float cell_freq    = chf("cell_freq");     // 1.00
+float cell_stretch = chf("cell_stretch");  // 0.22  <1 → vertical cells
+float aniso_y      = chf("aniso_y");       // 0.42  <1 → sedimentary flatten
+int   seed         = chi("seed");
 
 vector p = v@P;
 p += set(seed * 0.17, seed * 0.31, seed * 0.11);
 
-// Domain warp: break the regular noise lattice (Entagma / cliff VDB videos).
+// Flatten Y before warp so the lattice reads as stacked beds, not blobs.
+vector pa = set(p.x, p.y * aniso_y, p.z);
+
 vector warp = set(
-    fbm(p * warp_freq + set(3.1, 0, 0), 3, 0.5),
-    fbm(p * warp_freq + set(0, 7.7, 0), 3, 0.5),
-    fbm(p * warp_freq + set(0, 0, 2.4), 3, 0.5)
+    fbm(pa * warp_freq + set(3.1, 0, 0), 3, 0.5),
+    fbm(pa * warp_freq + set(0, 7.7, 0), 3, 0.5),
+    fbm(pa * warp_freq + set(0, 0, 2.4), 3, 0.5)
 ) * warp_amp;
 
-vector q = p + warp;
+vector q = pa + warp;
 
 float macro = fbm(q * fbm_freq, fbm_oct, fbm_rough) * fbm_amp;
 
-// Vertically stretched Worley F2-F1 = jointed blocks (80.lv rock breakdown).
+// Vertically stretched Worley F2−F1 = jointed blocks (80.lv).
 vector cw = set(q.x, q.y * cell_stretch, q.z) * cell_freq;
 float cells = (worley_f2f1(cw) * 2.0 - 0.7) * cell_amp;
 
